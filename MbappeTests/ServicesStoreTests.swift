@@ -151,6 +151,28 @@ final class ServicesStoreFilterTests: XCTestCase {
         store.delete(service)
         XCTAssertTrue(store.userDefinitions.isEmpty)
     }
+
+    @MainActor
+    func testUserDefinitionsPersistAcrossStoreInstances() {
+        let storeA = freshStore()
+        let def = UserServiceDefinition(name: "Persisted API", startCommand: "npm run dev")
+        storeA.addUserDefinition(def)
+
+        // A brand new store instance must load the saved definition.
+        let storeB = ServicesStore()
+        XCTAssertEqual(storeB.userDefinitions.map(\.name), ["Persisted API"])
+    }
+
+    @MainActor
+    func testHiddenIDsPersistAcrossStoreInstances() {
+        let storeA = freshStore()
+        let svc = makeService(id: "brew:redis", kind: .homebrew(formula: "redis"), isCatalogKnown: true)
+        storeA._setDiscoveredForTesting([svc])
+        storeA.hide(svc)
+
+        let storeB = ServicesStore()
+        XCTAssertTrue(storeB.hiddenServiceIDs.contains("brew:redis"))
+    }
 }
 
 // MARK: - Groups

@@ -94,6 +94,7 @@ final class ServicesStore: ObservableObject {
     /// On quit: stop non-keep-alive processes, leave keep-alive ones running.
     func handleAppTermination() async {
         await ProcessManager.shared.handleAppTermination(keepAliveServiceIDs: keepAliveServiceIDs)
+        flushDefaults()
     }
 
     // MARK: - Logs
@@ -318,6 +319,7 @@ final class ServicesStore: ObservableObject {
     private func saveUserDefinitions() {
         guard let data = try? JSONEncoder().encode(userDefinitions) else { return }
         UserDefaults.standard.set(data, forKey: userDefinitionsKey)
+        flushDefaults()
     }
 
     private func loadHiddenServiceIDs() {
@@ -327,6 +329,7 @@ final class ServicesStore: ObservableObject {
 
     private func saveHiddenServiceIDs() {
         UserDefaults.standard.set(Array(hiddenServiceIDs), forKey: hiddenServiceIDsKey)
+        flushDefaults()
     }
 
     private func loadSurfacedServiceIDs() {
@@ -336,6 +339,7 @@ final class ServicesStore: ObservableObject {
 
     private func saveSurfacedServiceIDs() {
         UserDefaults.standard.set(Array(surfacedServiceIDs), forKey: surfacedServiceIDsKey)
+        flushDefaults()
     }
 
     private func loadGroups() {
@@ -348,6 +352,14 @@ final class ServicesStore: ObservableObject {
     private func saveGroups() {
         guard let data = try? JSONEncoder().encode(groups) else { return }
         UserDefaults.standard.set(data, forKey: groupsKey)
+        flushDefaults()
+    }
+
+    /// Force a synchronous flush of UserDefaults to disk. `cfprefsd` normally
+    /// flushes lazily, which can lose recent writes if the app is killed shortly
+    /// after. A menu-bar app is frequently force-quit, so we flush explicitly.
+    private func flushDefaults() {
+        UserDefaults.standard.synchronize()
     }
 
     // MARK: - Private

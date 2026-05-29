@@ -10,6 +10,8 @@ struct EditorWindowView: View {
             switch target {
             case .newService:
                 UserServiceEditorView()
+            case .editService(let def):
+                UserServiceEditorView(editing: def)
             case .newGroup:
                 GroupEditorView()
             case .editGroup(let group):

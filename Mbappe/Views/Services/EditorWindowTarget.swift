@@ -6,12 +6,14 @@ import Foundation
 /// `NSOpenPanel` file/folder pickers get and keep focus correctly.
 enum EditorWindowTarget: Identifiable, Hashable, Codable {
     case newService
+    case editService(UserServiceDefinition)
     case newGroup
     case editGroup(ServiceGroup)
 
     var id: String {
         switch self {
         case .newService: "newService"
+        case .editService(let def): "editService-\(def.id)"
         case .newGroup: "newGroup"
         case .editGroup(let group): "editGroup-\(group.id)"
         }
