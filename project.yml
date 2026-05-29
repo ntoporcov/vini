@@ -1,0 +1,88 @@
+include:
+  - path: project.local.yml
+    enable: ${INCLUDE_PROJECT_LOCAL_YAML}
+
+name: Mbappe
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    macOS: 14.0
+  fileTypes:
+    icon:
+      file: true
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 1.0.0
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      ENABLE_TESTABILITY: YES
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+      ONLY_ACTIVE_ARCH: YES
+targets:
+  Mbappe:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Mbappe
+        excludes:
+          - AGENTS.md
+          - "**/AGENTS.md"
+          - Generated-Info.plist
+    preBuildScripts:
+      - name: Validate bundle identifier
+        script: |
+          if [ "$PRODUCT_BUNDLE_IDENTIFIER" != "com.ntoporcov.mbappe" ]; then
+            echo "error: Unexpected bundle identifier '$PRODUCT_BUNDLE_IDENTIFIER'. Regenerate the project from project.yml before building."
+            exit 1
+          fi
+    info:
+      path: Mbappe/Generated-Info.plist
+      properties:
+        CFBundleDisplayName: Mbappe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        ITSAppUsesNonExemptEncryption: false
+        NSHumanReadableCopyright: "Copyright © 2026 Nicolas Toporcov. All rights reserved."
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.mbappe
+        PRODUCT_NAME: Mbappe
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Mbappe/Mbappe.entitlements
+        SWIFT_EMIT_LOC_STRINGS: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+    scheme:
+      gatherCoverageData: false
+      testTargets:
+        - MbappeTests
+  MbappeTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    hostApplication: Mbappe
+    sources:
+      - path: MbappeTests
+        excludes:
+          - AGENTS.md
+          - "**/AGENTS.md"
+    dependencies:
+      - target: Mbappe
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.mbappe.tests
+        CODE_SIGN_STYLE: Automatic
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mbappe.app/Contents/MacOS/Mbappe"
+        BUNDLE_LOADER: "$(TEST_HOST)"

@@ -1,0 +1,1 @@
+Manage your local running services from the menu bar.

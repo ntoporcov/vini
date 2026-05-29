@@ -1,0 +1,1 @@
+services, menubar, developer tools, local, postgres, redis

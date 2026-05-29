@@ -1,0 +1,32 @@
+.DS_Store
+
+# Generated Xcode project (source of truth is project.yml)
+*.xcodeproj/
+
+# Xcode / SwiftPM build output
+DerivedData/
+.derivedData/
+.derived-data*/
+.derived-device/
+.derived-data-device/
+.derivedData-device/
+.derivedData*/
+build/
+BuildDevice/
+*.xcresult/
+
+# User-specific Xcode state
+xcuserdata/
+*.xcuserstate
+project.local.yml
+*.local.xcconfig
+fastlane/.env*
+!fastlane/.env.default
+fastlane/report.xml
+
+# Local scratch space
+tmp/
+.opencode/.env*
+
+# App Review credentials (managed locally, not in repo)
+fastlane/metadata/review_information/
