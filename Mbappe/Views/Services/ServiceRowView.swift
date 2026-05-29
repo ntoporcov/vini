@@ -4,10 +4,15 @@ import SwiftUI
 struct ServiceRowView: View {
     let service: MbappeService
     var onViewLogs: () -> Void = {}
+    /// Extra leading inset for tree indentation.
+    var leadingInset: CGFloat = 0
     @EnvironmentObject private var store: ServicesStore
 
     var body: some View {
         HStack(spacing: 12) {
+            if leadingInset > 0 {
+                Spacer().frame(width: leadingInset)
+            }
             // Status indicator + icon
             ZStack {
                 Circle()

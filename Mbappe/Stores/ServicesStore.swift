@@ -29,16 +29,21 @@ final class ServicesStore: ObservableObject {
     /// Service groups (simultaneous / sequenced). Persisted to UserDefaults.
     @Published private(set) var groups: [ServiceGroup] = []
 
+    /// Tree folder node ids the user has expanded. Persisted.
+    @Published private(set) var expandedNodeIDs: Set<String> = []
+
     private let userDefinitionsKey = "mbappe.userDefinitions"
     private let hiddenServiceIDsKey = "mbappe.hiddenServiceIDs"
     private let surfacedServiceIDsKey = "mbappe.surfacedServiceIDs"
     private let groupsKey = "mbappe.groups"
+    private let expandedNodeIDsKey = "mbappe.expandedNodeIDs"
 
     init() {
         loadUserDefinitions()
         loadHiddenServiceIDs()
         loadSurfacedServiceIDs()
         loadGroups()
+        loadExpandedNodeIDs()
     }
 
     // MARK: - Derived collections (for the Manage view)
@@ -240,9 +245,40 @@ final class ServicesStore: ObservableObject {
         allDiscovered.first { $0.id == id }
     }
 
-    /// Resolve a group's member ids into their current service models (in order).
+    func group(withID id: UUID) -> ServiceGroup? {
+        groups.first { $0.id == id }
+    }
+
+    /// Resolve a group's plain-service members (non-group ids) into models, in order.
     func members(of group: ServiceGroup) -> [MbappeService] {
         group.memberServiceIDs.compactMap { service(withID: $0) }
+    }
+
+    // MARK: - Tree
+
+    /// The full services tree (folders for simultaneous groups, leaves for
+    /// services and sequenced groups, plus an Ungrouped bucket).
+    var tree: [ServiceTreeNode] {
+        ServiceTree.build(groups: groups, services: services)
+    }
+
+    // MARK: - Aggregate status
+
+    /// Recursively collect the plain services reachable from a group (following
+    /// nested groups), cycle-safe.
+    func reachableServices(of group: ServiceGroup, visited: Set<UUID> = []) -> [MbappeService] {
+        var seenVisited = visited
+        seenVisited.insert(group.id)
+        var result: [MbappeService] = []
+        for member in group.memberServiceIDs {
+            if let gid = ServiceGroup.groupID(fromMemberID: member) {
+                guard !seenVisited.contains(gid), let child = self.group(withID: gid) else { continue }
+                result += reachableServices(of: child, visited: seenVisited)
+            } else if let svc = service(withID: member) {
+                result.append(svc)
+            }
+        }
+        return result
     }
 
     // MARK: - Groups CRUD
@@ -260,51 +296,152 @@ final class ServicesStore: ObservableObject {
 
     func removeGroup(id: UUID) {
         groups.removeAll { $0.id == id }
+        // Also strip references to this group from any other group's members.
+        let ref = "group:\(id.uuidString)"
+        for idx in groups.indices {
+            groups[idx].memberServiceIDs.removeAll { $0 == ref }
+        }
         saveGroups()
+    }
+
+    /// Would adding `candidateGroupID` as a member of `targetGroupID` create a
+    /// cycle? (True if candidate already reaches target.)
+    func wouldCreateCycle(addingGroup candidateGroupID: UUID, to targetGroupID: UUID) -> Bool {
+        if candidateGroupID == targetGroupID { return true }
+        guard let candidate = group(withID: candidateGroupID) else { return false }
+        // If target is reachable from candidate, adding candidate->...->target
+        // under target would loop.
+        return groupReaches(candidate, targetID: targetGroupID, visited: [])
+    }
+
+    private func groupReaches(_ group: ServiceGroup, targetID: UUID, visited: Set<UUID>) -> Bool {
+        if group.id == targetID { return true }
+        var v = visited
+        v.insert(group.id)
+        for member in group.memberServiceIDs {
+            guard let gid = ServiceGroup.groupID(fromMemberID: member), !v.contains(gid) else { continue }
+            guard let child = self.group(withID: gid) else { continue }
+            if groupReaches(child, targetID: targetID, visited: v) { return true }
+        }
+        return false
     }
 
     // MARK: - Group execution
 
-    /// Start every member of a group. Simultaneous groups launch concurrently;
-    /// sequenced groups launch in order and (optionally) stop early on failure.
+    /// Start every member of a group. Simultaneous groups launch members
+    /// concurrently (recursing into nested groups); sequenced groups launch
+    /// members in order and (optionally) stop early on failure.
     func runGroup(_ group: ServiceGroup) async {
-        let members = members(of: group)
+        await runGroup(group, visited: [])
+    }
+
+    private func runGroup(_ group: ServiceGroup, visited: Set<UUID>) async {
+        guard !visited.contains(group.id) else { return }
+        var v = visited
+        v.insert(group.id)
+
         switch group.mode {
         case .simultaneous:
+            // Start plain services + nested simultaneous groups all at once, but
+            // run nested SEQUENCED groups as ordered units (preserving their order).
+            let plainServices = directSimultaneousServices(of: group, visited: v)
+            let sequencedChildren = nestedSequencedGroups(of: group, visited: v)
+
             await withTaskGroup(of: Void.self) { taskGroup in
-                for member in members {
+                for svc in plainServices {
                     taskGroup.addTask { [weak self] in
-                        await self?.start(member)
+                        await self?.start(svc)
                     }
                 }
             }
+            // Sequenced children each preserve their internal ordering.
+            for child in sequencedChildren {
+                await runGroup(child, visited: v)
+            }
         case .sequenced:
-            for member in members {
-                await mutateStatus(member.id, to: .starting)
+            for member in group.memberServiceIDs {
+                if let gid = ServiceGroup.groupID(fromMemberID: member) {
+                    if let child = self.group(withID: gid) {
+                        await runGroup(child, visited: v)
+                    }
+                    continue
+                }
+                guard let svc = service(withID: member) else { continue }
+                await mutateStatus(svc.id, to: .starting)
                 do {
-                    try await ServiceController.shared.start(member)
+                    try await ServiceController.shared.start(svc)
                 } catch {
-                    lastError = "Group '\(group.name)' stopped at '\(member.name)': \(error.localizedDescription)"
+                    lastError = "Group '\(group.name)' stopped at '\(svc.name)': \(error.localizedDescription)"
                     if group.stopOnFailure {
                         await refresh()
                         return
                     }
                 }
             }
-            await refresh()
         }
+        await refresh()
     }
 
-    /// Stop every member of a group (always concurrent — order doesn't matter on stop).
+    /// Plain leaf services reachable through simultaneous nesting (NOT crossing
+    /// into sequenced groups, which are run as ordered units).
+    private func directSimultaneousServices(of group: ServiceGroup, visited: Set<UUID>) -> [MbappeService] {
+        var result: [MbappeService] = []
+        for member in group.memberServiceIDs {
+            if let gid = ServiceGroup.groupID(fromMemberID: member) {
+                guard !visited.contains(gid), let child = self.group(withID: gid), child.mode == .simultaneous else { continue }
+                var v = visited
+                v.insert(gid)
+                result += directSimultaneousServices(of: child, visited: v)
+            } else if let svc = service(withID: member) {
+                result.append(svc)
+            }
+        }
+        return result
+    }
+
+    /// Sequenced groups reachable through simultaneous nesting.
+    private func nestedSequencedGroups(of group: ServiceGroup, visited: Set<UUID>) -> [ServiceGroup] {
+        var result: [ServiceGroup] = []
+        for member in group.memberServiceIDs {
+            guard let gid = ServiceGroup.groupID(fromMemberID: member),
+                  !visited.contains(gid),
+                  let child = self.group(withID: gid) else { continue }
+            if child.mode == .sequenced {
+                result.append(child)
+            } else {
+                var v = visited
+                v.insert(gid)
+                result += nestedSequencedGroups(of: child, visited: v)
+            }
+        }
+        return result
+    }
+
+    /// Stop every reachable member of a group (always concurrent).
     func stopGroup(_ group: ServiceGroup) async {
-        let members = members(of: group)
+        let services = reachableServices(of: group)
         await withTaskGroup(of: Void.self) { taskGroup in
-            for member in members {
+            for svc in services {
                 taskGroup.addTask { [weak self] in
-                    await self?.stop(member)
+                    await self?.stop(svc)
                 }
             }
         }
+    }
+
+    // MARK: - Expansion state (tree folders)
+
+    func isExpanded(_ nodeID: String) -> Bool {
+        expandedNodeIDs.contains(nodeID)
+    }
+
+    func toggleExpanded(_ nodeID: String) {
+        if expandedNodeIDs.contains(nodeID) {
+            expandedNodeIDs.remove(nodeID)
+        } else {
+            expandedNodeIDs.insert(nodeID)
+        }
+        saveExpandedNodeIDs()
     }
 
     // MARK: - Persistence
@@ -352,6 +489,16 @@ final class ServicesStore: ObservableObject {
     private func saveGroups() {
         guard let data = try? JSONEncoder().encode(groups) else { return }
         UserDefaults.standard.set(data, forKey: groupsKey)
+        flushDefaults()
+    }
+
+    private func loadExpandedNodeIDs() {
+        let stored = UserDefaults.standard.stringArray(forKey: expandedNodeIDsKey) ?? []
+        expandedNodeIDs = Set(stored)
+    }
+
+    private func saveExpandedNodeIDs() {
+        UserDefaults.standard.set(Array(expandedNodeIDs), forKey: expandedNodeIDsKey)
         flushDefaults()
     }
 

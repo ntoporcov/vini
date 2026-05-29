@@ -91,15 +91,14 @@ struct GroupEditorView: View {
 
     private var membersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Services")
+            Text("Members")
                 .font(.subheadline.weight(.semibold))
 
             if memberIDs.isEmpty {
-                Text("No services added yet. Pick from the list below.")
+                Text("No members added yet. Pick services or groups below.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                // Ordered members (reorderable for sequenced groups).
                 VStack(spacing: 4) {
                     ForEach(Array(memberIDs.enumerated()), id: \.element) { index, id in
                         memberRow(id: id, index: index)
@@ -109,31 +108,55 @@ struct GroupEditorView: View {
 
             Divider().padding(.vertical, 4)
 
-            Text("Available")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ForEach(availableServices, id: \.id) { service in
-                Button {
-                    memberIDs.append(service.id)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "plus.circle")
-                        Image(systemName: service.iconSystemName).frame(width: 18)
-                        Text(service.name).font(.system(size: 12))
-                        Spacer()
-                        Text(service.kind.sourceLabel)
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }
-                    .contentShape(Rectangle())
+            if !availableServices.isEmpty {
+                Text("Available services")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(availableServices, id: \.id) { service in
+                    availableRow(
+                        icon: service.iconSystemName,
+                        name: service.name,
+                        detail: service.kind.sourceLabel
+                    ) { memberIDs.append(service.id) }
                 }
-                .buttonStyle(.plain)
-                .padding(.vertical, 2)
+            }
+
+            if !availableGroups.isEmpty {
+                Text("Available groups")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                ForEach(availableGroups, id: \.id) { group in
+                    availableRow(
+                        icon: group.mode.iconSystemName,
+                        name: group.name,
+                        detail: group.mode.displayLabel
+                    ) { memberIDs.append(group.memberReferenceID) }
+                }
             }
         }
     }
 
+    private func availableRow(icon: String, name: String, detail: String, add: @escaping () -> Void) -> some View {
+        Button(action: add) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle")
+                Image(systemName: icon).frame(width: 18)
+                Text(name).font(.system(size: 12))
+                Spacer()
+                Text(detail)
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 2)
+    }
+
     private func memberRow(id: String, index: Int) -> some View {
-        let service = store.service(withID: id)
+        let isGroup = ServiceGroup.groupID(fromMemberID: id) != nil
+        let memberName = displayName(forMemberID: id)
+        let memberIcon = displayIcon(forMemberID: id)
         return HStack(spacing: 8) {
             if mode == .sequenced {
                 Text("\(index + 1).")
@@ -141,9 +164,10 @@ struct GroupEditorView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 18, alignment: .trailing)
             }
-            Image(systemName: service?.iconSystemName ?? "questionmark.circle")
+            Image(systemName: memberIcon)
                 .frame(width: 18)
-            Text(service?.name ?? id)
+                .foregroundStyle(isGroup ? Color.accentColor : .primary)
+            Text(memberName)
                 .font(.system(size: 12, weight: .medium))
             Spacer()
             if mode == .sequenced {
@@ -180,6 +204,35 @@ struct GroupEditorView: View {
             !memberIDs.contains(service.id) && service.isControllable
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Other groups eligible to be nested here: not this group, not already a
+    /// member, and not creating a cycle.
+    private var availableGroups: [ServiceGroup] {
+        store.groups.filter { candidate in
+            guard candidate.id != editing?.id else { return false }
+            guard !memberIDs.contains(candidate.memberReferenceID) else { return false }
+            if let targetID = editing?.id,
+               store.wouldCreateCycle(addingGroup: candidate.id, to: targetID) {
+                return false
+            }
+            return true
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func displayName(forMemberID id: String) -> String {
+        if let gid = ServiceGroup.groupID(fromMemberID: id) {
+            return store.group(withID: gid)?.name ?? "Unknown group"
+        }
+        return store.service(withID: id)?.name ?? id
+    }
+
+    private func displayIcon(forMemberID id: String) -> String {
+        if let gid = ServiceGroup.groupID(fromMemberID: id) {
+            return store.group(withID: gid)?.mode.iconSystemName ?? "rectangle.3.group"
+        }
+        return store.service(withID: id)?.iconSystemName ?? "questionmark.circle"
     }
 
     // MARK: - Actions

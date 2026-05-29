@@ -136,15 +136,30 @@ enum ServiceGroupMode: String, Hashable, Sendable, Codable {
 }
 
 /// A named collection of services run together (simultaneously or in sequence).
+///
+/// Members are referenced by id and may be plain services ("user:…", "brew:…",
+/// "launchd:…", "port:…") or other groups ("group:<uuid>"), enabling nesting.
+/// Simultaneous groups act as folders in the tree; sequenced groups act as a
+/// single leaf that runs its members in order.
 struct ServiceGroup: Hashable, Sendable, Codable, Identifiable {
     var id: UUID
     var name: String
     var mode: ServiceGroupMode
-    /// Ordered member service ids (e.g. "user:<uuid>", "brew:redis").
+    /// Ordered member ids. A member id of the form "group:<uuid>" references a
+    /// nested group.
     var memberServiceIDs: [String]
     /// For `.sequenced`: if a member fails to start, stop the remaining sequence.
     var stopOnFailure: Bool
     var iconSystemName: String
+
+    /// This group's reference id as used inside another group's member list.
+    var memberReferenceID: String { "group:\(id.uuidString)" }
+
+    /// Extract the group UUID from a "group:<uuid>" member id, if it is one.
+    static func groupID(fromMemberID memberID: String) -> UUID? {
+        guard memberID.hasPrefix("group:") else { return nil }
+        return UUID(uuidString: String(memberID.dropFirst("group:".count)))
+    }
 
     init(
         id: UUID = UUID(),
