@@ -1,13 +1,150 @@
 import SwiftUI
 import AppKit
 
-/// Sheet for creating or editing a user-defined service, with project auto-discovery.
+/// Sheet for creating or editing a user-defined service.
+///
+/// Creating starts on a helper grid (NPM, Custom). Editing goes straight to the
+/// custom form.
 struct UserServiceEditorView: View {
     @EnvironmentObject private var store: ServicesStore
     @Environment(\.dismiss) private var dismiss
 
     /// Existing definition when editing; nil when creating.
     let editing: UserServiceDefinition?
+
+    @State private var step: Step
+
+    private enum Step {
+        case picker
+        case custom
+        case npm
+    }
+
+    init(editing: UserServiceDefinition? = nil) {
+        self.editing = editing
+        // Editing always uses the free-form custom step.
+        _step = State(initialValue: editing == nil ? .picker : .custom)
+    }
+
+    var body: some View {
+        switch step {
+        case .picker:
+            HelperPickerView(
+                onSelectCustom: { step = .custom },
+                onSelectNPM: { step = .npm },
+                onCancel: { dismiss() }
+            )
+            .frame(width: 460, height: 360)
+        case .custom:
+            CustomServiceFormView(
+                editing: editing,
+                showBack: editing == nil,
+                onBack: { step = .picker }
+            )
+            .frame(width: 460, height: 560)
+        case .npm:
+            NPMServiceFlowView(onBack: { step = .picker })
+                .frame(width: 460, height: 560)
+        }
+    }
+}
+
+// MARK: - Helper picker grid
+
+private struct HelperPickerView: View {
+    let onSelectCustom: () -> Void
+    let onSelectNPM: () -> Void
+    let onCancel: () -> Void
+
+    private let columns = [GridItem(.flexible()), GridItem(.flexible())]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Add a Service")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+
+            Text("Choose how you'd like to set up your service.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+
+            LazyVGrid(columns: columns, spacing: 12) {
+                HelperCard(
+                    title: "NPM",
+                    subtitle: "Pick a package.json and turn its scripts into services.",
+                    systemImage: "shippingbox",
+                    action: onSelectNPM
+                )
+                HelperCard(
+                    title: "Custom",
+                    subtitle: "Define your own start and stop commands.",
+                    systemImage: "terminal",
+                    action: onSelectCustom
+                )
+            }
+            .padding(16)
+
+            Spacer()
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+        }
+    }
+}
+
+private struct HelperCard: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 24))
+                    .foregroundStyle(Color.accentColor)
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .topLeading)
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 12).fill(.quaternary.opacity(0.4)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Custom service form
+
+/// The free-form service editor (also used when editing any service).
+private struct CustomServiceFormView: View {
+    @EnvironmentObject private var store: ServicesStore
+    @Environment(\.dismiss) private var dismiss
+
+    let editing: UserServiceDefinition?
+    let showBack: Bool
+    let onBack: () -> Void
 
     @State private var name: String = ""
     @State private var startCommand: String = ""
@@ -16,23 +153,12 @@ struct UserServiceEditorView: View {
     @State private var probePortText: String = ""
     @State private var keepAliveOnQuit: Bool = false
 
-    @State private var suggestions: [ProjectSuggestion] = []
-    @State private var isScanning = false
-
-    init(editing: UserServiceDefinition? = nil) {
-        self.editing = editing
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if editing == nil {
-                        discoverySection
-                        Divider()
-                    }
                     formSection
                 }
                 .padding(16)
@@ -40,15 +166,20 @@ struct UserServiceEditorView: View {
             Divider()
             footer
         }
-        .frame(width: 460, height: 560)
         .onAppear(perform: load)
     }
 
     // MARK: - Header / footer
 
     private var header: some View {
-        HStack {
-            Text(editing == nil ? "New Service" : "Edit Service")
+        HStack(spacing: 8) {
+            if showBack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+            }
+            Text(editing == nil ? "Custom Service" : "Edit Service")
                 .font(.headline)
             Spacer()
         }
@@ -66,67 +197,6 @@ struct UserServiceEditorView: View {
                 .disabled(!isValid)
         }
         .padding(16)
-    }
-
-    // MARK: - Discovery
-
-    private var discoverySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Suggested projects", systemImage: "sparkles")
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if isScanning {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
-            if suggestions.isEmpty && !isScanning {
-                Text("No projects found in ~/Developer, ~/Projects, ~/Code, ~/src, or ~/repos.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 6) {
-                    ForEach(suggestions) { suggestion in
-                        suggestionRow(suggestion)
-                    }
-                }
-            }
-        }
-    }
-
-    private func suggestionRow(_ suggestion: ProjectSuggestion) -> some View {
-        Button {
-            apply(suggestion)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: suggestion.projectType.iconSystemName)
-                    .frame(width: 20)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(suggestion.name)
-                        .font(.system(size: 12, weight: .medium))
-                    Text("\(suggestion.projectType.displayName) · \(suggestion.suggestedCommand)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Image(systemName: "arrow.up.left.circle")
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func apply(_ suggestion: ProjectSuggestion) {
-        if name.isEmpty { name = suggestion.name }
-        startCommand = suggestion.suggestedCommand
-        workingDirectory = suggestion.directory
     }
 
     // MARK: - Form
@@ -179,27 +249,13 @@ struct UserServiceEditorView: View {
     }
 
     private func load() {
-        if let editing {
-            name = editing.name
-            startCommand = editing.startCommand
-            stopCommand = editing.stopCommand ?? ""
-            workingDirectory = editing.workingDirectory ?? ""
-            probePortText = editing.probePort.map(String.init) ?? ""
-            keepAliveOnQuit = editing.keepAliveOnQuit
-        } else {
-            runScan()
-        }
-    }
-
-    private func runScan() {
-        isScanning = true
-        Task {
-            let found = await ProjectScanner.shared.scan()
-            await MainActor.run {
-                suggestions = found
-                isScanning = false
-            }
-        }
+        guard let editing else { return }
+        name = editing.name
+        startCommand = editing.startCommand
+        stopCommand = editing.stopCommand ?? ""
+        workingDirectory = editing.workingDirectory ?? ""
+        probePortText = editing.probePort.map(String.init) ?? ""
+        keepAliveOnQuit = editing.keepAliveOnQuit
     }
 
     private func chooseDirectory() {
@@ -209,7 +265,6 @@ struct UserServiceEditorView: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             workingDirectory = url.path
-            // Offer a command suggestion if we recognize the picked folder.
             Task {
                 if let detected = await ProjectScanner.shared.detect(directory: url) {
                     await MainActor.run {

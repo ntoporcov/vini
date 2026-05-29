@@ -212,6 +212,14 @@ final class ServicesStore: ObservableObject {
         Task { await refresh() }
     }
 
+    /// Add several user-defined services at once (e.g. from NPM scripts).
+    func addUserDefinitions(_ definitions: [UserServiceDefinition]) {
+        guard !definitions.isEmpty else { return }
+        userDefinitions.append(contentsOf: definitions)
+        saveUserDefinitions()
+        Task { await refresh() }
+    }
+
     /// Delete a user-defined service. `service` must be of kind `.userDefined`.
     func delete(_ service: MbappeService) {
         guard case .userDefined(let definition) = service.kind else { return }
