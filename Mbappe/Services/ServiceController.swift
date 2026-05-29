@@ -19,7 +19,8 @@ actor ServiceController {
             try await ProcessManager.shared.start(
                 serviceID: service.id,
                 command: def.startCommand,
-                workingDirectory: def.workingDirectory
+                workingDirectory: def.workingDirectory,
+                keepAlive: def.keepAliveOnQuit
             )
         case .portProbe:
             throw ServiceControlError.notControllable(service.name)

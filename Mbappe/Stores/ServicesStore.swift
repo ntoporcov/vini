@@ -73,6 +73,29 @@ final class ServicesStore: ObservableObject {
         applyFilter()
     }
 
+    // MARK: - App lifecycle
+
+    /// Re-adopt any kept-alive processes left running by a previous launch,
+    /// then refresh so their status reflects reality.
+    func adoptPersistedProcessesAndRefresh() async {
+        await ProcessManager.shared.adoptPersistedProcesses()
+        await refresh()
+    }
+
+    /// Service ids the user marked keep-alive-on-quit.
+    private var keepAliveServiceIDs: Set<String> {
+        Set(
+            userDefinitions
+                .filter { $0.keepAliveOnQuit }
+                .map { "user:\($0.id.uuidString)" }
+        )
+    }
+
+    /// On quit: stop non-keep-alive processes, leave keep-alive ones running.
+    func handleAppTermination() async {
+        await ProcessManager.shared.handleAppTermination(keepAliveServiceIDs: keepAliveServiceIDs)
+    }
+
     private func applyFilter() {
         services = allDiscovered.filter { service in
             if service.isCatalogKnown {

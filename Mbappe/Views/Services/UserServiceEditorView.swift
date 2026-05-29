@@ -14,6 +14,7 @@ struct UserServiceEditorView: View {
     @State private var stopCommand: String = ""
     @State private var workingDirectory: String = ""
     @State private var probePortText: String = ""
+    @State private var keepAliveOnQuit: Bool = false
 
     @State private var suggestions: [ProjectSuggestion] = []
     @State private var isScanning = false
@@ -148,6 +149,15 @@ struct UserServiceEditorView: View {
             }
 
             field("Probe port (optional)", text: $probePortText, placeholder: "3000")
+
+            Toggle(isOn: $keepAliveOnQuit) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep running when Mbappe quits")
+                    Text("Mbappe re-adopts the process on next launch if it's still alive.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -175,6 +185,7 @@ struct UserServiceEditorView: View {
             stopCommand = editing.stopCommand ?? ""
             workingDirectory = editing.workingDirectory ?? ""
             probePortText = editing.probePort.map(String.init) ?? ""
+            keepAliveOnQuit = editing.keepAliveOnQuit
         } else {
             runScan()
         }
@@ -222,6 +233,7 @@ struct UserServiceEditorView: View {
             stopCommand: trimmedStop.isEmpty ? nil : trimmedStop,
             workingDirectory: trimmedDir.isEmpty ? nil : trimmedDir,
             probePort: port,
+            keepAliveOnQuit: keepAliveOnQuit,
             iconSystemName: editing?.iconSystemName ?? "terminal"
         )
 

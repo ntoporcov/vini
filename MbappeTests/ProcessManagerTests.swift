@@ -45,4 +45,46 @@ final class ProcessManagerTests: XCTestCase {
         let running = await manager.isRunning(id)
         XCTAssertFalse(running)
     }
+
+    // MARK: - PID verification (re-adoption safety)
+
+    func testProcessMatchesAliveWithMatchingCommand() throws {
+        let marker = "mbappe-test-\(UUID().uuidString)"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "sleep 30 # \(marker)"]
+        try process.run()
+        defer { process.terminate() }
+
+        let pid = process.processIdentifier
+        XCTAssertTrue(ProcessManager.processMatches(pid: pid, expectedCommand: marker))
+    }
+
+    func testProcessMatchesFailsOnMismatchedCommand() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "sleep 30 # real-command"]
+        try process.run()
+        defer { process.terminate() }
+
+        let pid = process.processIdentifier
+        // PID is alive, but the command does not match -> must NOT adopt.
+        XCTAssertFalse(ProcessManager.processMatches(pid: pid, expectedCommand: "totally-different-command"))
+    }
+
+    func testProcessMatchesFailsForDeadPID() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "true"]
+        try process.run()
+        process.waitUntilExit()
+
+        let pid = process.processIdentifier
+        XCTAssertFalse(ProcessManager.processMatches(pid: pid, expectedCommand: "true"))
+    }
+
+    func testProcessMatchesFailsForInvalidPID() {
+        XCTAssertFalse(ProcessManager.processMatches(pid: -1, expectedCommand: "anything"))
+        XCTAssertFalse(ProcessManager.processMatches(pid: 0, expectedCommand: "anything"))
+    }
 }

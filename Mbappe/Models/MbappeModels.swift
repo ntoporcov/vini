@@ -67,6 +67,9 @@ struct UserServiceDefinition: Hashable, Sendable, Codable, Identifiable {
     /// Directory the command runs from. Defaults to the user's home dir if nil.
     var workingDirectory: String?
     var probePort: Int?
+    /// When true, the process is left running when Mbappe quits and re-adopted
+    /// (by verified PID) on the next launch. When false, it is stopped on quit.
+    var keepAliveOnQuit: Bool
     var iconSystemName: String
 
     init(
@@ -76,6 +79,7 @@ struct UserServiceDefinition: Hashable, Sendable, Codable, Identifiable {
         stopCommand: String? = nil,
         workingDirectory: String? = nil,
         probePort: Int? = nil,
+        keepAliveOnQuit: Bool = false,
         iconSystemName: String = "terminal"
     ) {
         self.id = id
@@ -84,7 +88,26 @@ struct UserServiceDefinition: Hashable, Sendable, Codable, Identifiable {
         self.stopCommand = stopCommand
         self.workingDirectory = workingDirectory
         self.probePort = probePort
+        self.keepAliveOnQuit = keepAliveOnQuit
         self.iconSystemName = iconSystemName
+    }
+
+    // Custom decoding so definitions saved before `keepAliveOnQuit` existed
+    // still decode (defaulting the new field to false).
+    enum CodingKeys: String, CodingKey {
+        case id, name, startCommand, stopCommand, workingDirectory, probePort, keepAliveOnQuit, iconSystemName
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        startCommand = try c.decode(String.self, forKey: .startCommand)
+        stopCommand = try c.decodeIfPresent(String.self, forKey: .stopCommand)
+        workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
+        probePort = try c.decodeIfPresent(Int.self, forKey: .probePort)
+        keepAliveOnQuit = try c.decodeIfPresent(Bool.self, forKey: .keepAliveOnQuit) ?? false
+        iconSystemName = try c.decode(String.self, forKey: .iconSystemName)
     }
 }
 

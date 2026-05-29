@@ -31,6 +31,12 @@ struct ServiceRowView: View {
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
+                    if isKeptAlive {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.tertiary)
+                            .help("Stays running when Mbappe quits")
+                    }
                 }
             }
 
@@ -66,6 +72,13 @@ struct ServiceRowView: View {
         case .starting, .stopping: .orange
         case .unknown:  .secondary
         }
+    }
+
+    private var isKeptAlive: Bool {
+        if case .userDefined(let def) = service.kind {
+            return def.keepAliveOnQuit
+        }
+        return false
     }
 }
 
