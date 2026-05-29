@@ -3,8 +3,17 @@ import SwiftUI
 /// Root view rendered inside the menu-bar popover.
 struct MenuBarRootView: View {
     @EnvironmentObject private var store: ServicesStore
+    @Environment(\.openWindow) private var openWindow
     @State private var showingManage = false
     @State private var activeSheet: EditorSheet?
+    @State private var logContext: LogContext?
+
+    /// Active log preview (service + its live session).
+    private struct LogContext: Identifiable {
+        let service: MbappeService
+        let session: LogSession
+        var id: String { service.id }
+    }
 
     /// Which editor sheet is presented, if any.
     private enum EditorSheet: Identifiable {
@@ -23,7 +32,21 @@ struct MenuBarRootView: View {
 
     var body: some View {
         Group {
-            if showingManage {
+            if let logContext {
+                LogPreviewView(
+                    service: logContext.service,
+                    session: logContext.session,
+                    onBack: { self.logContext = nil },
+                    onOpenWindow: {
+                        openWindow(value: LogWindowTarget(
+                            serviceID: logContext.service.id,
+                            serviceName: logContext.service.name
+                        ))
+                        NSApp.activate(ignoringOtherApps: true)
+                        self.logContext = nil
+                    }
+                )
+            } else if showingManage {
                 ManageServicesView(onBack: { showingManage = false })
             } else {
                 mainList
@@ -44,6 +67,13 @@ struct MenuBarRootView: View {
         }
     }
 
+    private func viewLogs(_ service: MbappeService) {
+        Task {
+            let session = await store.makeLogSession(for: service)
+            logContext = LogContext(service: service, session: session)
+        }
+    }
+
     private var mainList: some View {
         VStack(spacing: 0) {
             MenuBarHeaderView(
@@ -51,7 +81,10 @@ struct MenuBarRootView: View {
                 onAddGroup: { activeSheet = .newGroup }
             )
             Divider()
-            ServiceListView(onEditGroup: { activeSheet = .editGroup($0) })
+            ServiceListView(
+                onEditGroup: { activeSheet = .editGroup($0) },
+                onViewLogs: { viewLogs($0) }
+            )
             Divider()
             MenuBarFooterView(onManage: { showingManage = true })
         }

@@ -96,6 +96,24 @@ final class ServicesStore: ObservableObject {
         await ProcessManager.shared.handleAppTermination(keepAliveServiceIDs: keepAliveServiceIDs)
     }
 
+    // MARK: - Logs
+
+    /// Whether the given service currently has a log file with content.
+    func hasLogs(for service: MbappeService) -> Bool {
+        LogFileManager.size(service.id) > 0
+    }
+
+    /// Build a live log session for a service. `isLiveCaptureAvailable` is false
+    /// for re-adopted/detached processes (historic logs only).
+    func makeLogSession(for service: MbappeService) async -> LogSession {
+        let live = await ProcessManager.shared.hasLiveCapture(service.id)
+        return LogSession(
+            serviceID: service.id,
+            serviceName: service.name,
+            isLiveCaptureAvailable: live
+        )
+    }
+
     private func applyFilter() {
         services = allDiscovered.filter { service in
             if service.isCatalogKnown {

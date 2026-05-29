@@ -6,6 +6,8 @@ struct ServiceListView: View {
 
     /// Called when the user asks to edit a group.
     var onEditGroup: (ServiceGroup) -> Void = { _ in }
+    /// Called when the user asks to view a service's logs.
+    var onViewLogs: (MbappeService) -> Void = { _ in }
 
     var body: some View {
         if store.services.isEmpty && store.groups.isEmpty {
@@ -26,7 +28,7 @@ struct ServiceListView: View {
                             sectionHeader("Services")
                         }
                         ForEach(store.services) { service in
-                            ServiceRowView(service: service)
+                            ServiceRowView(service: service, onViewLogs: { onViewLogs(service) })
                             if service.id != store.services.last?.id {
                                 Divider().padding(.leading, 48)
                             }

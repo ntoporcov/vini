@@ -87,4 +87,23 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertFalse(ProcessManager.processMatches(pid: -1, expectedCommand: "anything"))
         XCTAssertFalse(ProcessManager.processMatches(pid: 0, expectedCommand: "anything"))
     }
+
+    // MARK: - Log capture
+
+    func testProcessOutputIsCapturedToLogFile() async throws {
+        let manager = ProcessManager.shared
+        let id = "user:logcap-\(UUID().uuidString)"
+        let marker = "hello-\(UUID().uuidString)"
+        LogFileManager.clear(id)
+
+        try await manager.start(serviceID: id, command: "echo \(marker)", workingDirectory: nil)
+
+        // Wait for the process to finish and the pipe handler to flush.
+        try await Task.sleep(for: .milliseconds(500))
+
+        let logs = LogFileManager.readTail(id)
+        XCTAssertTrue(logs.contains(marker), "expected captured output to contain \(marker), got: \(logs)")
+        await manager.stop(serviceID: id)
+        LogFileManager.clear(id)
+    }
 }

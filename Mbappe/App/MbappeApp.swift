@@ -11,5 +11,14 @@ struct MbappeApp: App {
             SettingsView()
                 .environmentObject(appDelegate.servicesStore)
         }
+
+        // Standalone logs windows, one per service (opened from the popover).
+        WindowGroup(for: LogWindowTarget.self) { $target in
+            if let target {
+                LogWindowView(target: target)
+                    .environmentObject(appDelegate.servicesStore)
+            }
+        }
+        .windowResizability(.contentMinSize)
     }
 }

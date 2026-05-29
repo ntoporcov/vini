@@ -22,12 +22,19 @@ actor ProcessManager {
     static let shared = ProcessManager()
 
     private enum Tracked {
-        case owned(process: Process, command: String, startedAt: Date)
+        case owned(process: Process, pipe: Pipe, command: String, startedAt: Date)
         case adopted(pid: Int32, command: String, startedAt: Date)
     }
 
     /// Keyed by service id (e.g. "user:<uuid>").
     private var running: [String: Tracked] = [:]
+
+    /// Service ids whose process this instance owns (live log capture available).
+    /// Adopted processes are NOT live-captured.
+    func hasLiveCapture(_ serviceID: String) -> Bool {
+        if case .owned = running[serviceID] { return true }
+        return false
+    }
 
     private let persistenceKey = "mbappe.keptAliveProcesses"
 
@@ -83,18 +90,27 @@ actor ProcessManager {
         env["PATH"] = (env["PATH"].map { "\($0):\(extraPaths)" }) ?? extraPaths
         process.environment = env
 
-        // Discard output (a future enhancement could capture logs).
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        // Capture stdout + stderr into the service's log file.
+        LogFileManager.writeSessionHeader(serviceID, command: command)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        let capturedID = serviceID
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            LogFileManager.append(capturedID, text: String(decoding: data, as: UTF8.self))
+        }
 
         do {
             try process.run()
         } catch {
+            pipe.fileHandleForReading.readabilityHandler = nil
             throw ProcessManagerError.launchFailed(error.localizedDescription)
         }
 
         let startedAt = Date()
-        running[serviceID] = .owned(process: process, command: command, startedAt: startedAt)
+        running[serviceID] = .owned(process: process, pipe: pipe, command: command, startedAt: startedAt)
 
         if keepAlive {
             persist(PersistedProcess(
@@ -110,6 +126,9 @@ actor ProcessManager {
     func stop(serviceID: String) {
         guard let entry = running[serviceID] else { return }
         defer {
+            if case .owned(_, let pipe, _, _) = entry {
+                pipe.fileHandleForReading.readabilityHandler = nil
+            }
             running[serviceID] = nil
             removePersisted(serviceID: serviceID)
         }
@@ -118,7 +137,7 @@ actor ProcessManager {
         let pid = pidOf(entry)
         // Terminate the whole process group first; fall back to the process/pid.
         if killpg(pid, SIGTERM) != 0 {
-            if case .owned(let process, _, _) = entry {
+            if case .owned(let process, _, _, _) = entry {
                 process.terminate()
             } else {
                 kill(pid, SIGTERM)
@@ -227,7 +246,7 @@ actor ProcessManager {
 
     private func isAlive(_ entry: Tracked) -> Bool {
         switch entry {
-        case .owned(let process, _, _):
+        case .owned(let process, _, _, _):
             return process.isRunning
         case .adopted(let pid, _, _):
             return kill(pid, 0) == 0
@@ -236,21 +255,21 @@ actor ProcessManager {
 
     private func pidOf(_ entry: Tracked) -> Int32 {
         switch entry {
-        case .owned(let process, _, _): process.processIdentifier
+        case .owned(let process, _, _, _): process.processIdentifier
         case .adopted(let pid, _, _):   pid
         }
     }
 
     private func commandOf(_ entry: Tracked) -> String {
         switch entry {
-        case .owned(_, let command, _):   command
+        case .owned(_, _, let command, _):   command
         case .adopted(_, let command, _): command
         }
     }
 
     private func startedAtOf(_ entry: Tracked) -> Date {
         switch entry {
-        case .owned(_, _, let startedAt):   startedAt
+        case .owned(_, _, _, let startedAt):   startedAt
         case .adopted(_, _, let startedAt): startedAt
         }
     }

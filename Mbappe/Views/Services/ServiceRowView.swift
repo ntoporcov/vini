@@ -3,6 +3,7 @@ import SwiftUI
 /// A single row in the service list — mirrors the JetBrains Services panel feel.
 struct ServiceRowView: View {
     let service: MbappeService
+    var onViewLogs: () -> Void = {}
     @EnvironmentObject private var store: ServicesStore
 
     var body: some View {
@@ -49,6 +50,14 @@ struct ServiceRowView: View {
         .padding(.vertical, 10)
         .contentShape(Rectangle())
         .contextMenu {
+            if isUserDefined {
+                Button {
+                    onViewLogs()
+                } label: {
+                    Label("View Logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Divider()
+            }
             if case .userDefined = service.kind {
                 Button(role: .destructive) {
                     store.delete(service)
@@ -78,6 +87,11 @@ struct ServiceRowView: View {
         if case .userDefined(let def) = service.kind {
             return def.keepAliveOnQuit
         }
+        return false
+    }
+
+    private var isUserDefined: Bool {
+        if case .userDefined = service.kind { return true }
         return false
     }
 }
