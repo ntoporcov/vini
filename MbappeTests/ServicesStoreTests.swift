@@ -153,4 +153,48 @@ final class ServicesStoreFilterTests: XCTestCase {
     }
 }
 
+// MARK: - Groups
+
+final class ServiceGroupTests: XCTestCase {
+
+    @MainActor
+    private func freshStore() -> ServicesStore {
+        UserDefaults.standard.removeObject(forKey: "mbappe.groups")
+        return ServicesStore()
+    }
+
+    @MainActor
+    func testGroupCRUD() {
+        let store = freshStore()
+        var group = ServiceGroup(name: "Backend", mode: .simultaneous, memberServiceIDs: ["brew:redis"])
+        store.addGroup(group)
+        XCTAssertEqual(store.groups.count, 1)
+
+        group.name = "Backend stack"
+        store.updateGroup(group)
+        XCTAssertEqual(store.groups.first?.name, "Backend stack")
+
+        store.removeGroup(id: group.id)
+        XCTAssertTrue(store.groups.isEmpty)
+    }
+
+    @MainActor
+    func testMembersResolveInOrder() {
+        let store = freshStore()
+        let redis = MbappeService(id: "brew:redis", name: "Redis", kind: .homebrew(formula: "redis"), pid: nil, port: nil, status: .stopped, iconSystemName: "memorychip")
+        let pg = MbappeService(id: "brew:postgresql@17", name: "PostgreSQL", kind: .homebrew(formula: "postgresql@17"), pid: nil, port: nil, status: .stopped, iconSystemName: "cylinder.fill")
+        store._setDiscoveredForTesting([pg, redis])
+
+        let group = ServiceGroup(name: "Stack", mode: .sequenced, memberServiceIDs: ["brew:redis", "brew:postgresql@17"])
+        let members = store.members(of: group)
+        XCTAssertEqual(members.map(\.id), ["brew:redis", "brew:postgresql@17"])
+    }
+
+    func testSimultaneousAndSequencedModeMetadata() {
+        XCTAssertEqual(ServiceGroupMode.simultaneous.displayLabel, "Simultaneous")
+        XCTAssertEqual(ServiceGroupMode.sequenced.displayLabel, "Sequenced")
+    }
+}
+
+
 

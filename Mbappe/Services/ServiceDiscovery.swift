@@ -18,7 +18,7 @@ actor ServiceDiscovery {
         async let ports = discoverPorts()
 
         var services = await brew + agents
-        services += probeUserDefined(userDefinitions, knownPorts: services.compactMap(\.port))
+        services += await probeUserDefined(userDefinitions)
 
         // Add port-probed services only when no controllable service already covers
         // that port — avoids showing e.g. PostgreSQL twice (brew + port 5432).
@@ -176,16 +176,23 @@ actor ServiceDiscovery {
     // MARK: - User-defined
 
     private func probeUserDefined(
-        _ definitions: [UserServiceDefinition],
-        knownPorts: [Int]
-    ) -> [MbappeService] {
-        definitions.map { def in
-            var status: ServiceStatus = .unknown
-            if let probePort = def.probePort {
+        _ definitions: [UserServiceDefinition]
+    ) async -> [MbappeService] {
+        let runningIDs = await ProcessManager.shared.runningServiceIDs()
+        return definitions.map { def in
+            let id = "user:\(def.id.uuidString)"
+            let status: ServiceStatus
+            if runningIDs.contains(id) {
+                // Mbappe owns a live process for this service.
+                status = .running
+            } else if let probePort = def.probePort {
+                // Fall back to a port probe for detached/externally-started services.
                 status = (listeningPID(onPort: probePort) != nil) ? .running : .stopped
+            } else {
+                status = .stopped
             }
             return MbappeService(
-                id: "user:\(def.id.uuidString)",
+                id: id,
                 name: def.name,
                 kind: .userDefined(definition: def),
                 pid: nil,

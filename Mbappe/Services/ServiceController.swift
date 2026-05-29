@@ -15,7 +15,12 @@ actor ServiceController {
         case .launchAgent(let label):
             try Shell.run(Shell.launchctlPath, ["start", label], throwOnFailure: true)
         case .userDefined(let def):
-            try Shell.runScript(def.startCommand, throwOnFailure: true)
+            // Mbappe owns the process so it can report status and stop it later.
+            try await ProcessManager.shared.start(
+                serviceID: service.id,
+                command: def.startCommand,
+                workingDirectory: def.workingDirectory
+            )
         case .portProbe:
             throw ServiceControlError.notControllable(service.name)
         }
@@ -28,10 +33,12 @@ actor ServiceController {
         case .launchAgent(let label):
             try Shell.run(Shell.launchctlPath, ["stop", label], throwOnFailure: true)
         case .userDefined(let def):
-            guard let stopCommand = def.stopCommand, !stopCommand.isEmpty else {
-                throw ServiceControlError.noStopCommand(service.name)
+            // Prefer terminating the tracked process. If a custom stop command is
+            // provided, run it too (covers detached daemons).
+            await ProcessManager.shared.stop(serviceID: service.id)
+            if let stopCommand = def.stopCommand, !stopCommand.isEmpty {
+                try Shell.runScript(stopCommand, throwOnFailure: false)
             }
-            try Shell.runScript(stopCommand, throwOnFailure: true)
         case .portProbe:
             throw ServiceControlError.notControllable(service.name)
         }

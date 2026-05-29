@@ -26,14 +26,19 @@ final class ServicesStore: ObservableObject {
     /// All discovered services before any hide/surface filtering is applied.
     @Published private(set) var allDiscovered: [MbappeService] = []
 
+    /// Service groups (simultaneous / sequenced). Persisted to UserDefaults.
+    @Published private(set) var groups: [ServiceGroup] = []
+
     private let userDefinitionsKey = "mbappe.userDefinitions"
     private let hiddenServiceIDsKey = "mbappe.hiddenServiceIDs"
     private let surfacedServiceIDsKey = "mbappe.surfacedServiceIDs"
+    private let groupsKey = "mbappe.groups"
 
     init() {
         loadUserDefinitions()
         loadHiddenServiceIDs()
         loadSurfacedServiceIDs()
+        loadGroups()
     }
 
     // MARK: - Derived collections (for the Manage view)
@@ -178,6 +183,80 @@ final class ServicesStore: ObservableObject {
         Task { await refresh() }
     }
 
+    // MARK: - Service lookup
+
+    /// Find a discovered service by its id.
+    func service(withID id: String) -> MbappeService? {
+        allDiscovered.first { $0.id == id }
+    }
+
+    /// Resolve a group's member ids into their current service models (in order).
+    func members(of group: ServiceGroup) -> [MbappeService] {
+        group.memberServiceIDs.compactMap { service(withID: $0) }
+    }
+
+    // MARK: - Groups CRUD
+
+    func addGroup(_ group: ServiceGroup) {
+        groups.append(group)
+        saveGroups()
+    }
+
+    func updateGroup(_ group: ServiceGroup) {
+        guard let idx = groups.firstIndex(where: { $0.id == group.id }) else { return }
+        groups[idx] = group
+        saveGroups()
+    }
+
+    func removeGroup(id: UUID) {
+        groups.removeAll { $0.id == id }
+        saveGroups()
+    }
+
+    // MARK: - Group execution
+
+    /// Start every member of a group. Simultaneous groups launch concurrently;
+    /// sequenced groups launch in order and (optionally) stop early on failure.
+    func runGroup(_ group: ServiceGroup) async {
+        let members = members(of: group)
+        switch group.mode {
+        case .simultaneous:
+            await withTaskGroup(of: Void.self) { taskGroup in
+                for member in members {
+                    taskGroup.addTask { [weak self] in
+                        await self?.start(member)
+                    }
+                }
+            }
+        case .sequenced:
+            for member in members {
+                await mutateStatus(member.id, to: .starting)
+                do {
+                    try await ServiceController.shared.start(member)
+                } catch {
+                    lastError = "Group '\(group.name)' stopped at '\(member.name)': \(error.localizedDescription)"
+                    if group.stopOnFailure {
+                        await refresh()
+                        return
+                    }
+                }
+            }
+            await refresh()
+        }
+    }
+
+    /// Stop every member of a group (always concurrent — order doesn't matter on stop).
+    func stopGroup(_ group: ServiceGroup) async {
+        let members = members(of: group)
+        await withTaskGroup(of: Void.self) { taskGroup in
+            for member in members {
+                taskGroup.addTask { [weak self] in
+                    await self?.stop(member)
+                }
+            }
+        }
+    }
+
     // MARK: - Persistence
 
     private func loadUserDefinitions() {
@@ -208,6 +287,18 @@ final class ServicesStore: ObservableObject {
 
     private func saveSurfacedServiceIDs() {
         UserDefaults.standard.set(Array(surfacedServiceIDs), forKey: surfacedServiceIDsKey)
+    }
+
+    private func loadGroups() {
+        guard let data = UserDefaults.standard.data(forKey: groupsKey),
+              let decoded = try? JSONDecoder().decode([ServiceGroup].self, from: data)
+        else { return }
+        groups = decoded
+    }
+
+    private func saveGroups() {
+        guard let data = try? JSONEncoder().encode(groups) else { return }
+        UserDefaults.standard.set(data, forKey: groupsKey)
     }
 
     // MARK: - Private

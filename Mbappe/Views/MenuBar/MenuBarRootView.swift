@@ -4,20 +4,54 @@ import SwiftUI
 struct MenuBarRootView: View {
     @EnvironmentObject private var store: ServicesStore
     @State private var showingManage = false
+    @State private var activeSheet: EditorSheet?
+
+    /// Which editor sheet is presented, if any.
+    private enum EditorSheet: Identifiable {
+        case newService
+        case newGroup
+        case editGroup(ServiceGroup)
+
+        var id: String {
+            switch self {
+            case .newService: "newService"
+            case .newGroup: "newGroup"
+            case .editGroup(let group): "editGroup-\(group.id)"
+            }
+        }
+    }
 
     var body: some View {
-        if showingManage {
-            ManageServicesView(onBack: { showingManage = false })
-        } else {
-            mainList
+        Group {
+            if showingManage {
+                ManageServicesView(onBack: { showingManage = false })
+            } else {
+                mainList
+            }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .newService:
+                UserServiceEditorView()
+                    .environmentObject(store)
+            case .newGroup:
+                GroupEditorView()
+                    .environmentObject(store)
+            case .editGroup(let group):
+                GroupEditorView(editing: group)
+                    .environmentObject(store)
+            }
         }
     }
 
     private var mainList: some View {
         VStack(spacing: 0) {
-            MenuBarHeaderView()
+            MenuBarHeaderView(
+                onAddService: { activeSheet = .newService },
+                onAddGroup: { activeSheet = .newGroup }
+            )
             Divider()
-            ServiceListView()
+            ServiceListView(onEditGroup: { activeSheet = .editGroup($0) })
             Divider()
             MenuBarFooterView(onManage: { showingManage = true })
         }
@@ -30,12 +64,32 @@ struct MenuBarRootView: View {
 
 private struct MenuBarHeaderView: View {
     @EnvironmentObject private var store: ServicesStore
+    let onAddService: () -> Void
+    let onAddGroup: () -> Void
 
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text("Services")
                 .font(.headline)
             Spacer()
+            Menu {
+                Button {
+                    onAddService()
+                } label: {
+                    Label("New Service…", systemImage: "terminal")
+                }
+                Button {
+                    onAddGroup()
+                } label: {
+                    Label("New Group…", systemImage: "rectangle.3.group")
+                }
+            } label: {
+                Image(systemName: "plus")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+
             if store.isRefreshing {
                 ProgressView()
                     .controlSize(.small)
