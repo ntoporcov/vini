@@ -8,7 +8,7 @@ A macOS-only, menu-bar-only app (`LSUIElement = true`) that shows running local 
 
 - SwiftUI throughout — no UIKit
 - AppDelegate via `@NSApplicationDelegateAdaptor` for NSStatusItem lifecycle
-- `@Observable` stores passed via `@EnvironmentObject`
+- `ObservableObject` stores passed via `@EnvironmentObject`
 - `actor` isolation for all I/O: `ServiceDiscovery`, `ServiceController`
 - All UI state is `@MainActor`
 
@@ -51,5 +51,5 @@ Replace them with real logic such as:
 - Swift 6.0 strict concurrency — no `nonisolated(unsafe)` unless justified
 - All network / process I/O in `actor` types, never on `@MainActor`
 - Views receive state via `@EnvironmentObject` — never hold stores as `@State`
-- Prefer `@Observable` over `ObservableObject` for new stores
+- Stores are `@MainActor final class ... : ObservableObject` with `@Published` state, since `@EnvironmentObject` requires `ObservableObject`
 - Preview all views with `#if DEBUG` guards around `#Preview` blocks
