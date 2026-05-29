@@ -48,19 +48,38 @@ actor ServiceDiscovery {
             return []
         }
 
-        return entries.compactMap { entry in
-            // Only surface formulae that match the curated catalog.
-            guard let known = KnownServices.entry(forIdentifier: entry.name) else { return nil }
+        return entries.map { entry in
+            if let known = KnownServices.entry(forIdentifier: entry.name) {
+                return MbappeService(
+                    id: "brew:\(entry.name)",
+                    name: known.displayName,
+                    kind: .homebrew(formula: entry.name),
+                    pid: entry.pid,
+                    port: known.port,
+                    status: ServiceStatus(brewStatus: entry.status),
+                    iconSystemName: known.icon,
+                    isCatalogKnown: true
+                )
+            }
+            // Unlisted formula — still returned, flagged so it stays out of the
+            // main list until the user surfaces it from the Manage view.
             return MbappeService(
                 id: "brew:\(entry.name)",
-                name: known.displayName,
+                name: Self.prettyFormulaName(entry.name),
                 kind: .homebrew(formula: entry.name),
                 pid: entry.pid,
-                port: known.port,
+                port: nil,
                 status: ServiceStatus(brewStatus: entry.status),
-                iconSystemName: known.icon
+                iconSystemName: "gearshape.2",
+                isCatalogKnown: false
             )
         }
+    }
+
+    private static func prettyFormulaName(_ formula: String) -> String {
+        formula
+            .split(separator: "@").first
+            .map { $0.replacingOccurrences(of: "-", with: " ").capitalized } ?? formula
     }
 
     // MARK: - launchd
@@ -77,23 +96,48 @@ actor ServiceDiscovery {
             guard cols.count == 3 else { continue }
             let label = String(cols[2])
 
-            // Only surface agents that match the curated catalog of popular tools.
-            guard let known = KnownServices.entry(forIdentifier: label) else { continue }
+            // Skip Apple's own system agents entirely — they are noise, not
+            // user-managed services, and surfacing them would be dangerous.
+            guard !label.hasPrefix("com.apple.") else { continue }
 
             let pid = Int(cols[0])
-            services.append(
-                MbappeService(
-                    id: "launchd:\(label)",
-                    name: known.displayName,
-                    kind: .launchAgent(label: label),
-                    pid: pid,
-                    port: known.port,
-                    status: pid != nil ? .running : .stopped,
-                    iconSystemName: known.icon
+            if let known = KnownServices.entry(forIdentifier: label) {
+                services.append(
+                    MbappeService(
+                        id: "launchd:\(label)",
+                        name: known.displayName,
+                        kind: .launchAgent(label: label),
+                        pid: pid,
+                        port: known.port,
+                        status: pid != nil ? .running : .stopped,
+                        iconSystemName: known.icon,
+                        isCatalogKnown: true
+                    )
                 )
-            )
+            } else {
+                // Unlisted agent — returned but flagged; surfaced only on demand.
+                services.append(
+                    MbappeService(
+                        id: "launchd:\(label)",
+                        name: Self.prettyLabelName(label),
+                        kind: .launchAgent(label: label),
+                        pid: pid,
+                        port: nil,
+                        status: pid != nil ? .running : .stopped,
+                        iconSystemName: "gearshape.2",
+                        isCatalogKnown: false
+                    )
+                )
+            }
         }
         return services
+    }
+
+    private static func prettyLabelName(_ label: String) -> String {
+        label
+            .replacingOccurrences(of: "homebrew.mxcl.", with: "")
+            .split(separator: ".").last
+            .map { $0.replacingOccurrences(of: "-", with: " ").capitalized } ?? label
     }
 
     // MARK: - Ports

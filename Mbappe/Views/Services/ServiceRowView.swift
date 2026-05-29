@@ -42,6 +42,21 @@ struct ServiceRowView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
+        .contextMenu {
+            if case .userDefined = service.kind {
+                Button(role: .destructive) {
+                    store.delete(service)
+                } label: {
+                    Label("Delete Service", systemImage: "trash")
+                }
+            } else {
+                Button {
+                    store.hide(service)
+                } label: {
+                    Label("Hide from List", systemImage: "eye.slash")
+                }
+            }
+        }
     }
 
     private var statusColor: Color {

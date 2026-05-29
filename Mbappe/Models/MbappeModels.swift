@@ -14,6 +14,11 @@ struct MbappeService: Identifiable, Hashable, Sendable {
     var status: ServiceStatus
     var iconSystemName: String
 
+    /// Whether this service matched the curated `KnownServices` catalog.
+    /// Catalog services appear in the main list by default; unlisted ones
+    /// must be explicitly surfaced by the user.
+    var isCatalogKnown: Bool = true
+
     /// Whether Mbappe knows how to start/stop this service.
     var isControllable: Bool {
         switch kind {

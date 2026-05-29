@@ -3,14 +3,23 @@ import SwiftUI
 /// Root view rendered inside the menu-bar popover.
 struct MenuBarRootView: View {
     @EnvironmentObject private var store: ServicesStore
+    @State private var showingManage = false
 
     var body: some View {
+        if showingManage {
+            ManageServicesView(onBack: { showingManage = false })
+        } else {
+            mainList
+        }
+    }
+
+    private var mainList: some View {
         VStack(spacing: 0) {
             MenuBarHeaderView()
             Divider()
             ServiceListView()
             Divider()
-            MenuBarFooterView()
+            MenuBarFooterView(onManage: { showingManage = true })
         }
         .frame(width: 320)
         .background(.ultraThinMaterial)
@@ -47,9 +56,31 @@ private struct MenuBarHeaderView: View {
 // MARK: - Footer
 
 private struct MenuBarFooterView: View {
+    @EnvironmentObject private var store: ServicesStore
+    let onManage: () -> Void
+
     var body: some View {
         HStack {
+            Button {
+                onManage()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "eye.slash")
+                    Text("Hidden")
+                    if store.hasManageableServices {
+                        Text("\(store.manageableServices.count)")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(.secondary.opacity(0.25)))
+                    }
+                }
+                .font(.caption)
+            }
+            .buttonStyle(.borderless)
+
             Spacer()
+
             SettingsLink {
                 Text("Settings")
                     .font(.caption)
