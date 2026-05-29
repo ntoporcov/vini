@@ -83,4 +83,55 @@ final class ProjectScannerTests: XCTestCase {
         XCTAssertEqual(suggestion?.name, "my-cool-api")
         XCTAssertEqual(suggestion?.directory, projectDir.path)
     }
+
+    // MARK: - Tree walk (depth + pruning)
+
+    private func mkdir(_ path: String) throws -> URL {
+        let url = tempDir.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func testFindsProjectNestedSeveralLevelsDeep() throws {
+        let deep = try mkdir("a/b/c/d/e/api")
+        try write("go.mod", in: deep)
+        let found = ProjectScanner.collectSuggestions(root: tempDir, depth: 6)
+        XCTAssertEqual(found.map(\.name), ["api"])
+    }
+
+    func testDepthLimitStopsDeeperProjects() throws {
+        let tooDeep = try mkdir("a/b/c/d/e/f/g/api")
+        try write("go.mod", in: tooDeep)
+        // 8 levels below root, but depth is 6 -> not found.
+        let found = ProjectScanner.collectSuggestions(root: tempDir, depth: 6)
+        XCTAssertTrue(found.isEmpty)
+    }
+
+    func testStopsDescendingOnceProjectDetected() throws {
+        // A node project that also contains a nested sub-package.
+        let project = try mkdir("frontend")
+        try write("package.json", in: project, contents: #"{}"#)
+        let nested = try mkdir("frontend/packages/ui")
+        try write("package.json", in: nested, contents: #"{}"#)
+
+        let found = ProjectScanner.collectSuggestions(root: tempDir, depth: 6)
+        // Only the outer project is reported; we don't descend into it.
+        XCTAssertEqual(found.map(\.name), ["frontend"])
+    }
+
+    func testSkipsNodeModulesAndBuildDirs() throws {
+        let buried = try mkdir("node_modules/some-dep")
+        try write("package.json", in: buried, contents: #"{}"#)
+        let found = ProjectScanner.collectSuggestions(root: tempDir, depth: 6)
+        XCTAssertTrue(found.isEmpty)
+    }
+
+    func testFindsMultipleSiblingProjects() throws {
+        let api = try mkdir("services/api")
+        try write("go.mod", in: api)
+        let web = try mkdir("services/web")
+        try write("package.json", in: web, contents: #"{}"#)
+        let found = ProjectScanner.collectSuggestions(root: tempDir, depth: 6)
+        XCTAssertEqual(Set(found.map(\.name)), ["api", "web"])
+    }
 }

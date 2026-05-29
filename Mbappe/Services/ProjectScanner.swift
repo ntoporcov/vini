@@ -2,8 +2,9 @@ import Foundation
 
 /// Scans common developer folders for runnable projects and suggests services.
 ///
-/// Detection is intentionally shallow (a couple of levels deep) and based on
-/// well-known indicator files so it stays fast. Requires filesystem read access
+/// Walks known dev roots up to a bounded depth, stops descending once a
+/// directory is recognized as a project, and skips noisy dependency/build dirs
+/// so deeper scans stay reasonably fast. Requires filesystem read access
 /// (available to the non-sandboxed build).
 actor ProjectScanner {
     static let shared = ProjectScanner()
@@ -11,10 +12,20 @@ actor ProjectScanner {
     private init() {}
 
     /// Root folders to scan, relative to the user's home directory.
-    private static let scanRoots = ["Developer", "Projects", "Code", "src", "repos"]
+    /// Includes common generic dev folders plus known IDE project locations
+    /// (IntelliJ's `IdeaProjects`, and `XcodeProjects` used by some devs).
+    private static let scanRoots = [
+        "Developer",
+        "Projects",
+        "Code",
+        "src",
+        "repos",
+        "IdeaProjects",
+        "XcodeProjects",
+    ]
 
     /// How many directory levels below each root to inspect.
-    private static let maxDepth = 2
+    private static let maxDepth = 6
 
     /// Scan the default roots and return de-duplicated suggestions, best signal first.
     func scan() -> [ProjectSuggestion] {
@@ -25,8 +36,7 @@ actor ProjectScanner {
         for root in Self.scanRoots {
             let rootURL = home.appendingPathComponent(root)
             guard isDirectory(rootURL) else { continue }
-            for dir in directories(under: rootURL, depth: Self.maxDepth) {
-                guard let suggestion = Self.suggestion(for: dir) else { continue }
+            for suggestion in scanTree(root: rootURL, depth: Self.maxDepth) {
                 if seen.insert(suggestion.directory).inserted {
                     suggestions.append(suggestion)
                 }
@@ -125,12 +135,25 @@ actor ProjectScanner {
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
     }
 
-    /// Breadth-limited directory walk up to `depth` levels below `root` (inclusive of root).
-    private func directories(under root: URL, depth: Int) -> [URL] {
-        var result: [URL] = [root]
+    /// Breadth-limited walk that collects project suggestions. Once a directory
+    /// is detected as a project, its children are NOT descended into (a project's
+    /// sub-packages shouldn't each become a separate service, and it keeps deeper
+    /// scans fast). Noisy dependency/build dirs are skipped.
+    private func scanTree(root: URL, depth: Int) -> [ProjectSuggestion] {
+        Self.collectSuggestions(root: root, depth: depth)
+    }
+
+    /// Pure, testable tree walk used by `scanTree`.
+    static func collectSuggestions(root: URL, depth: Int) -> [ProjectSuggestion] {
+        var suggestions: [ProjectSuggestion] = []
         var frontier: [URL] = [root]
         var level = 0
         let fm = FileManager.default
+
+        // Check the root itself.
+        if let rootSuggestion = suggestion(for: root) {
+            return [rootSuggestion]
+        }
 
         while level < depth, !frontier.isEmpty {
             var next: [URL] = []
@@ -143,17 +166,22 @@ actor ProjectScanner {
                 for child in children {
                     let isDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                     guard isDir == true else { continue }
-                    // Skip noisy dependency/build dirs.
                     let name = child.lastPathComponent
-                    if Self.ignoredDirectoryNames.contains(name) { continue }
-                    result.append(child)
-                    next.append(child)
+                    if ignoredDirectoryNames.contains(name) { continue }
+
+                    if let suggestion = suggestion(for: child) {
+                        // Detected a project — record it and stop descending here.
+                        suggestions.append(suggestion)
+                    } else {
+                        // Not a project: keep descending to find nested ones.
+                        next.append(child)
+                    }
                 }
             }
             frontier = next
             level += 1
         }
-        return result
+        return suggestions
     }
 
     private static let ignoredDirectoryNames: Set<String> = [
