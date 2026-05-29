@@ -5,7 +5,6 @@ struct MenuBarRootView: View {
     @EnvironmentObject private var store: ServicesStore
     @Environment(\.openWindow) private var openWindow
     @State private var showingManage = false
-    @State private var activeSheet: EditorSheet?
     @State private var logContext: LogContext?
 
     /// Active log preview (service + its live session).
@@ -13,21 +12,6 @@ struct MenuBarRootView: View {
         let service: MbappeService
         let session: LogSession
         var id: String { service.id }
-    }
-
-    /// Which editor sheet is presented, if any.
-    private enum EditorSheet: Identifiable {
-        case newService
-        case newGroup
-        case editGroup(ServiceGroup)
-
-        var id: String {
-            switch self {
-            case .newService: "newService"
-            case .newGroup: "newGroup"
-            case .editGroup(let group): "editGroup-\(group.id)"
-            }
-        }
     }
 
     var body: some View {
@@ -52,19 +36,13 @@ struct MenuBarRootView: View {
                 mainList
             }
         }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .newService:
-                UserServiceEditorView()
-                    .environmentObject(store)
-            case .newGroup:
-                GroupEditorView()
-                    .environmentObject(store)
-            case .editGroup(let group):
-                GroupEditorView(editing: group)
-                    .environmentObject(store)
-            }
-        }
+    }
+
+    /// Open an editor in a standalone window (not a popover sheet) so file/folder
+    /// pickers behave. Activating brings the new window forward.
+    private func openEditor(_ target: EditorWindowTarget) {
+        openWindow(value: target)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func viewLogs(_ service: MbappeService) {
@@ -77,12 +55,12 @@ struct MenuBarRootView: View {
     private var mainList: some View {
         VStack(spacing: 0) {
             MenuBarHeaderView(
-                onAddService: { activeSheet = .newService },
-                onAddGroup: { activeSheet = .newGroup }
+                onAddService: { openEditor(.newService) },
+                onAddGroup: { openEditor(.newGroup) }
             )
             Divider()
             ServiceListView(
-                onEditGroup: { activeSheet = .editGroup($0) },
+                onEditGroup: { openEditor(.editGroup($0)) },
                 onViewLogs: { viewLogs($0) }
             )
             Divider()

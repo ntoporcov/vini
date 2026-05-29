@@ -20,5 +20,15 @@ struct MbappeApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+
+        // Service / group create + edit flows run in a real window so file/folder
+        // pickers behave correctly (popover sheets fight for focus).
+        WindowGroup(for: EditorWindowTarget.self) { $target in
+            if let target {
+                EditorWindowView(target: target)
+                    .environmentObject(appDelegate.servicesStore)
+            }
+        }
+        .windowResizability(.contentSize)
     }
 }
