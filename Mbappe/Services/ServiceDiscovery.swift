@@ -27,11 +27,25 @@ actor ServiceDiscovery {
             services.append(probed)
         }
 
-        // De-dupe by id, preferring controllable entries, then sort by name.
+        return Self.dedupe(services)
+    }
+
+    /// De-dupe merged services: drop exact id duplicates, and drop a second entry
+    /// that shares a live PID with one already kept (two sources reporting the same
+    /// running process). Controllable entries win, then sort by name. nil PIDs are
+    /// never treated as duplicates of each other.
+    static func dedupe(_ services: [MbappeService]) -> [MbappeService] {
         var seen = Set<String>()
+        var seenPIDs = Set<Int>()
         return services
             .sorted { $0.isControllable && !$1.isControllable }
-            .filter { seen.insert($0.id).inserted }
+            .filter { service in
+                guard seen.insert(service.id).inserted else { return false }
+                if let pid = service.pid {
+                    guard seenPIDs.insert(pid).inserted else { return false }
+                }
+                return true
+            }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -99,6 +113,11 @@ actor ServiceDiscovery {
             // Skip Apple's own system agents entirely — they are noise, not
             // user-managed services, and surfacing them would be dangerous.
             guard !label.hasPrefix("com.apple.") else { continue }
+
+            // Skip Homebrew-managed agents: they are already surfaced (and better
+            // controlled) via `brew services`, so showing them here would duplicate
+            // e.g. PostgreSQL as both a Homebrew and a launchd entry.
+            guard !label.hasPrefix("homebrew.mxcl.") else { continue }
 
             let pid = Int(cols[0])
             if let known = KnownServices.entry(forIdentifier: label) {
