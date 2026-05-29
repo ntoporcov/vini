@@ -23,6 +23,9 @@ struct ServiceRowView: View {
                     .font(.system(size: 13, weight: .medium))
                 HStack(spacing: 4) {
                     StatusBadge(status: service.status)
+                    Text(service.kind.sourceLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                     if let port = service.port {
                         Text(":\(port)")
                             .font(.caption2)
@@ -85,7 +88,10 @@ private struct ServiceActionButtons: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if service.status == .running {
+            if !service.isControllable {
+                // Port-probed services are read-only.
+                EmptyView()
+            } else if service.status == .running {
                 Button {
                     Task { await store.restart(service) }
                 } label: {
@@ -124,8 +130,9 @@ private struct ServiceActionButtons: View {
 #Preview {
     VStack(spacing: 0) {
         ServiceRowView(service: MbappeService(
-            id: "preview-1",
-            name: "PostgreSQL",
+            id: "brew:postgresql",
+            name: "postgresql",
+            kind: .homebrew(formula: "postgresql"),
             pid: 1234,
             port: 5432,
             status: .running,
@@ -133,8 +140,9 @@ private struct ServiceActionButtons: View {
         ))
         Divider()
         ServiceRowView(service: MbappeService(
-            id: "preview-2",
-            name: "Redis",
+            id: "brew:redis",
+            name: "redis",
+            kind: .homebrew(formula: "redis"),
             pid: nil,
             port: 6379,
             status: .stopped,
@@ -142,11 +150,12 @@ private struct ServiceActionButtons: View {
         ))
         Divider()
         ServiceRowView(service: MbappeService(
-            id: "preview-3",
+            id: "port:80",
             name: "Nginx",
+            kind: .portProbe(port: 80),
             pid: 5678,
             port: 80,
-            status: .starting,
+            status: .running,
             iconSystemName: "network"
         ))
     }

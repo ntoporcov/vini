@@ -9,52 +9,92 @@ final class ServicesStore: ObservableObject {
 
     @Published private(set) var services: [MbappeService] = []
     @Published private(set) var isRefreshing: Bool = false
-    @Published private(set) var lastRefreshError: String? = nil
+    @Published private(set) var lastError: String? = nil
+
+    /// User-defined services configured in-app. Persisted to UserDefaults.
+    @Published private(set) var userDefinitions: [UserServiceDefinition] = []
+
+    private let userDefinitionsKey = "mbappe.userDefinitions"
+
+    init() {
+        loadUserDefinitions()
+    }
 
     // MARK: - Refresh
 
     /// Discover currently running services and update state.
     func refresh() async {
         isRefreshing = true
-        lastRefreshError = nil
         defer { isRefreshing = false }
-
-        do {
-            let discovered = try await ServiceDiscovery.shared.discover()
-            services = discovered
-        } catch {
-            lastRefreshError = error.localizedDescription
-        }
+        services = await ServiceDiscovery.shared.discover(userDefinitions: userDefinitions)
     }
 
     // MARK: - Actions
 
     func start(_ service: MbappeService) async {
-        guard let idx = services.firstIndex(where: { $0.id == service.id }) else { return }
-        services[idx].status = .starting
+        await mutateStatus(service.id, to: .starting)
         do {
             try await ServiceController.shared.start(service)
-            services[idx].status = .running
         } catch {
-            services[idx].status = .stopped
+            lastError = error.localizedDescription
         }
         await refresh()
     }
 
     func stop(_ service: MbappeService) async {
-        guard let idx = services.firstIndex(where: { $0.id == service.id }) else { return }
-        services[idx].status = .stopping
+        await mutateStatus(service.id, to: .stopping)
         do {
             try await ServiceController.shared.stop(service)
-            services[idx].status = .stopped
         } catch {
-            services[idx].status = .unknown
+            lastError = error.localizedDescription
         }
         await refresh()
     }
 
     func restart(_ service: MbappeService) async {
-        await stop(service)
-        await start(service)
+        await mutateStatus(service.id, to: .starting)
+        do {
+            try await ServiceController.shared.restart(service)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        await refresh()
+    }
+
+    func clearError() {
+        lastError = nil
+    }
+
+    // MARK: - User definitions
+
+    func addUserDefinition(_ definition: UserServiceDefinition) {
+        userDefinitions.append(definition)
+        saveUserDefinitions()
+        Task { await refresh() }
+    }
+
+    func removeUserDefinition(id: UUID) {
+        userDefinitions.removeAll { $0.id == id }
+        saveUserDefinitions()
+        Task { await refresh() }
+    }
+
+    private func loadUserDefinitions() {
+        guard let data = UserDefaults.standard.data(forKey: userDefinitionsKey),
+              let decoded = try? JSONDecoder().decode([UserServiceDefinition].self, from: data)
+        else { return }
+        userDefinitions = decoded
+    }
+
+    private func saveUserDefinitions() {
+        guard let data = try? JSONEncoder().encode(userDefinitions) else { return }
+        UserDefaults.standard.set(data, forKey: userDefinitionsKey)
+    }
+
+    // MARK: - Private
+
+    private func mutateStatus(_ id: String, to status: ServiceStatus) async {
+        guard let idx = services.firstIndex(where: { $0.id == id }) else { return }
+        services[idx].status = status
     }
 }

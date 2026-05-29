@@ -1,9 +1,0 @@
-Mbappe lives in your menu bar and gives you instant visibility into every local service running on your Mac — databases, servers, daemons — all in one place.
-
-Inspired by JetBrains' Services panel, Mbappe lets you start, stop, and restart services without ever touching a terminal.
-
-Features:
-• Live status for all your local services
-• One-click start / stop / restart
-• Port and PID at a glance
-• Minimal, focused UI — no clutter

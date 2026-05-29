@@ -5,8 +5,8 @@
 # Builds the Mbappe macOS target with development signing, copies the
 # resulting `.app` into `/Applications`, and (optionally) launches it.
 #
-# Designed for fast on-this-Mac dev iteration. NOT for App Store distribution
-# — that path is `fastlane mac archive` or a manual archive in Xcode.
+# Designed for fast on-this-Mac dev iteration. For distribution use
+# `fastlane mac release` (Developer ID signed + notarized).
 #
 # Usage:
 #   ./scripts/install_mac_local.sh             # build + copy to /Applications

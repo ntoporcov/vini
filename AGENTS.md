@@ -2,28 +2,51 @@
 
 ## What this project is
 
-A macOS-only, menu-bar-only app (`LSUIElement = true`) that shows running local services and lets users start/stop/restart them.
+A macOS-only, menu-bar-only app (`LSUIElement = true`) that shows running local services and lets users start/stop/restart them. Inspired by the JetBrains Services panel.
+
+## Distribution model (IMPORTANT)
+
+Mbappe is **non-sandboxed**, **Developer ID–signed**, and **notarized** — it is NOT a Mac App Store app.
+
+This is a hard requirement: the app spawns `brew`, `launchctl`, and `lsof` via `Process` to
+discover and control services. The App Store sandbox forbids executing arbitrary binaries, so
+sandboxing is disabled in `Mbappe/Mbappe.entitlements`. Hardened Runtime stays ON (required for
+notarization), with library validation disabled so child processes launch cleanly.
+
+Do NOT re-enable `com.apple.security.app-sandbox` — it will break discovery and control.
 
 ## Architecture
 
 - SwiftUI throughout — no UIKit
 - AppDelegate via `@NSApplicationDelegateAdaptor` for NSStatusItem lifecycle
-- `ObservableObject` stores passed via `@EnvironmentObject`
-- `actor` isolation for all I/O: `ServiceDiscovery`, `ServiceController`
+- `ObservableObject` store (`ServicesStore`) passed via `@EnvironmentObject`
+- `actor` isolation for all process I/O: `Shell`, `ServiceDiscovery`, `ServiceController`
 - All UI state is `@MainActor`
+
+## Service model
+
+`MbappeService` carries a `kind` (`ServiceKind`) that determines how it is controlled:
+
+- `.homebrew(formula:)` — `brew services start|stop|restart <formula>`
+- `.launchAgent(label:)` — `launchctl start|stop <label>`
+- `.portProbe(port:)` — read-only (detected via `lsof`), `isControllable == false`
+- `.userDefined(definition:)` — runs the user's custom start/stop shell commands
+
+`UserServiceDefinition` is `Codable` and persisted in `UserDefaults` by `ServicesStore`.
 
 ## Key Files
 
-- `Mbappe/App/MbappeApp.swift` — `@main` entry point
+- `Mbappe/App/MbappeApp.swift` — `@main` entry point (Settings scene only)
 - `Mbappe/App/AppDelegate.swift` — creates `MenuBarManager` and kicks off initial refresh
 - `Mbappe/Services/MenuBarManager.swift` — owns `NSStatusItem` and `NSPopover`
-- `Mbappe/Models/MbappeModels.swift` — `MbappeService`, `ServiceStatus`
-- `Mbappe/Stores/ServicesStore.swift` — single observable store for all service state
-- `Mbappe/Services/ServiceDiscovery.swift` — discovers running services (stub; replace with real impl)
-- `Mbappe/Services/ServiceController.swift` — starts/stops services (stub; replace with real impl)
+- `Mbappe/Services/Shell.swift` — process runner + tool path discovery (`brewPath`, `launchctlPath`, `lsofPath`)
+- `Mbappe/Models/MbappeModels.swift` — `MbappeService`, `ServiceKind`, `UserServiceDefinition`, `ServiceStatus`
+- `Mbappe/Stores/ServicesStore.swift` — observable store; refresh, actions, user-definition persistence
+- `Mbappe/Services/ServiceDiscovery.swift` — real discovery (brew JSON + launchctl + lsof ports)
+- `Mbappe/Services/ServiceController.swift` — real start/stop/restart per `ServiceKind`
 - `Mbappe/Views/MenuBar/MenuBarRootView.swift` — popover root
 - `Mbappe/Views/Services/ServiceListView.swift` — scrollable service list
-- `Mbappe/Views/Services/ServiceRowView.swift` — individual service row with action buttons
+- `Mbappe/Views/Services/ServiceRowView.swift` — service row; hides actions for non-controllable services
 - `Mbappe/Views/Settings/SettingsView.swift` — settings window content
 
 ## Project Generation
@@ -37,19 +60,25 @@ xcodegen generate
 INCLUDE_PROJECT_LOCAL_YAML=1 xcodegen generate
 ```
 
-## Extending Service Discovery
+## Tooling assumptions
 
-`ServiceDiscovery.swift` and `ServiceController.swift` contain stub implementations.
-Replace them with real logic such as:
-- Parsing `brew services list` output
-- Querying launchctl / launchd
-- Scanning known ports via `Network.framework`
-- Reading process lists via `ps` or `sysctl`
+- Homebrew is expected at `/opt/homebrew/bin/brew` (Apple Silicon), with `/usr/local/bin/brew` fallback.
+- `Shell.run` prepends common tool paths to `PATH` so tools resolve even when launched from Finder.
+- Discovery is best-effort: any source that fails (missing tool, parse error) returns an empty list
+  rather than throwing, so the menu always renders.
+
+## Distribution / fastlane
+
+- `fastlane mac build` — Debug sanity build
+- `fastlane mac archive` — Developer ID signed Release `.app`
+- `fastlane mac notarize_app` — notarize + staple
+- `fastlane mac release` — archive + notarize + zip
+- Notarization uses the App Store Connect API key (env vars in `fastlane/.env`).
 
 ## Coding Conventions
 
 - Swift 6.0 strict concurrency — no `nonisolated(unsafe)` unless justified
-- All network / process I/O in `actor` types, never on `@MainActor`
+- All process I/O in `actor` types, never on `@MainActor`
 - Views receive state via `@EnvironmentObject` — never hold stores as `@State`
 - Stores are `@MainActor final class ... : ObservableObject` with `@Published` state, since `@EnvironmentObject` requires `ObservableObject`
 - Preview all views with `#if DEBUG` guards around `#Preview` blocks
