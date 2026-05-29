@@ -17,10 +17,17 @@ actor ServiceDiscovery {
         async let agents = discoverLaunchAgents()
         async let ports = discoverPorts()
 
-        var services = await brew + agents + ports
+        var services = await brew + agents
         services += probeUserDefined(userDefinitions, knownPorts: services.compactMap(\.port))
 
-        // De-dupe by id, preferring controllable entries.
+        // Add port-probed services only when no controllable service already covers
+        // that port — avoids showing e.g. PostgreSQL twice (brew + port 5432).
+        let coveredPorts = Set(services.compactMap(\.port))
+        for probed in await ports where probed.port.map({ !coveredPorts.contains($0) }) ?? true {
+            services.append(probed)
+        }
+
+        // De-dupe by id, preferring controllable entries, then sort by name.
         var seen = Set<String>()
         return services
             .sorted { $0.isControllable && !$1.isControllable }
@@ -41,15 +48,17 @@ actor ServiceDiscovery {
             return []
         }
 
-        return entries.map { entry in
-            MbappeService(
+        return entries.compactMap { entry in
+            // Only surface formulae that match the curated catalog.
+            guard let known = KnownServices.entry(forIdentifier: entry.name) else { return nil }
+            return MbappeService(
                 id: "brew:\(entry.name)",
-                name: entry.name,
+                name: known.displayName,
                 kind: .homebrew(formula: entry.name),
                 pid: entry.pid,
-                port: nil,
+                port: known.port,
                 status: ServiceStatus(brewStatus: entry.status),
-                iconSystemName: Self.icon(forName: entry.name)
+                iconSystemName: known.icon
             )
         }
     }
@@ -68,67 +77,42 @@ actor ServiceDiscovery {
             guard cols.count == 3 else { continue }
             let label = String(cols[2])
 
-            // Only surface user-relevant agents, skip Apple system noise.
-            guard label.hasPrefix("homebrew.") || label.hasPrefix("com.user.") || isInterestingLabel(label) else {
-                continue
-            }
+            // Only surface agents that match the curated catalog of popular tools.
+            guard let known = KnownServices.entry(forIdentifier: label) else { continue }
 
             let pid = Int(cols[0])
             services.append(
                 MbappeService(
                     id: "launchd:\(label)",
-                    name: prettyName(fromLabel: label),
+                    name: known.displayName,
                     kind: .launchAgent(label: label),
                     pid: pid,
-                    port: nil,
+                    port: known.port,
                     status: pid != nil ? .running : .stopped,
-                    iconSystemName: Self.icon(forName: label)
+                    iconSystemName: known.icon
                 )
             )
         }
         return services
     }
 
-    private func isInterestingLabel(_ label: String) -> Bool {
-        // Heuristic: skip Apple-bundled agents.
-        !label.hasPrefix("com.apple.")
-    }
-
-    private func prettyName(fromLabel label: String) -> String {
-        label
-            .replacingOccurrences(of: "homebrew.mxcl.", with: "")
-            .split(separator: ".")
-            .last
-            .map(String.init) ?? label
-    }
-
     // MARK: - Ports
 
-    /// Probe a small set of well-known developer service ports.
+    /// Probe the catalog's well-known developer service ports.
     private func discoverPorts() -> [MbappeService] {
-        let wellKnown: [(port: Int, name: String)] = [
-            (5432, "PostgreSQL"),
-            (3306, "MySQL"),
-            (6379, "Redis"),
-            (27017, "MongoDB"),
-            (9200, "Elasticsearch"),
-            (5672, "RabbitMQ"),
-            (8080, "HTTP (8080)"),
-            (3000, "Dev Server (3000)"),
-        ]
-
         var services: [MbappeService] = []
-        for entry in wellKnown {
-            guard let pid = listeningPID(onPort: entry.port) else { continue }
+        for entry in KnownServices.catalog {
+            guard let port = entry.port else { continue }
+            guard let pid = listeningPID(onPort: port) else { continue }
             services.append(
                 MbappeService(
-                    id: "port:\(entry.port)",
-                    name: entry.name,
-                    kind: .portProbe(port: entry.port),
+                    id: "port:\(port)",
+                    name: entry.displayName,
+                    kind: .portProbe(port: port),
                     pid: pid,
-                    port: entry.port,
+                    port: port,
                     status: .running,
-                    iconSystemName: Self.icon(forName: entry.name)
+                    iconSystemName: entry.icon
                 )
             )
         }
@@ -166,28 +150,6 @@ actor ServiceDiscovery {
                 iconSystemName: def.iconSystemName
             )
         }
-    }
-
-    // MARK: - Icons
-
-    static func icon(forName name: String) -> String {
-        let lower = name.lowercased()
-        if lower.contains("postgres") || lower.contains("mysql") || lower.contains("mongo") || lower.contains("sql") {
-            return "cylinder.fill"
-        }
-        if lower.contains("redis") || lower.contains("memcache") {
-            return "memorychip"
-        }
-        if lower.contains("nginx") || lower.contains("http") || lower.contains("apache") {
-            return "network"
-        }
-        if lower.contains("elastic") || lower.contains("search") {
-            return "magnifyingglass"
-        }
-        if lower.contains("rabbit") || lower.contains("kafka") || lower.contains("queue") {
-            return "tray.full"
-        }
-        return "gearshape.2"
     }
 }
 

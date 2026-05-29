@@ -36,10 +36,30 @@ final class ServicesStoreTests: XCTestCase {
         XCTAssertFalse(service.isControllable)
     }
 
-    func testIconHeuristics() {
-        XCTAssertEqual(ServiceDiscovery.icon(forName: "postgresql"), "cylinder.fill")
-        XCTAssertEqual(ServiceDiscovery.icon(forName: "redis"), "memorychip")
-        XCTAssertEqual(ServiceDiscovery.icon(forName: "nginx"), "network")
+    // MARK: - KnownServices catalog
+
+    func testKnownServiceMatchesVersionedFormula() {
+        let entry = KnownServices.entry(forIdentifier: "postgresql@17")
+        XCTAssertEqual(entry?.displayName, "PostgreSQL")
+        XCTAssertEqual(entry?.port, 5432)
+    }
+
+    func testKnownServiceMatchesLaunchdLabel() {
+        let entry = KnownServices.entry(forIdentifier: "homebrew.mxcl.postgresql@17")
+        XCTAssertEqual(entry?.displayName, "PostgreSQL")
+    }
+
+    func testPodmanIsInCatalog() {
+        XCTAssertEqual(KnownServices.entry(forIdentifier: "podman")?.displayName, "Podman")
+    }
+
+    func testUnknownFormulaIsFilteredOut() {
+        XCTAssertNil(KnownServices.entry(forIdentifier: "some-obscure-tool"))
+    }
+
+    func testPortLookup() {
+        XCTAssertEqual(KnownServices.entry(forPort: 6379)?.displayName, "Redis")
+        XCTAssertNil(KnownServices.entry(forPort: 9999))
     }
 }
 
