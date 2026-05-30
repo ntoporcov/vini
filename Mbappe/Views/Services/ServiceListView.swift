@@ -52,6 +52,8 @@ struct ServiceListView: View {
 struct ServiceTreeNodeView: View {
     let node: ServiceTreeNode
     let depth: Int
+    /// The group this node is a direct member of (nil at root / Ungrouped).
+    var parentGroupID: UUID?
     var onEditGroup: (ServiceGroup) -> Void
     var onViewLogs: (MbappeService) -> Void
 
@@ -65,28 +67,48 @@ struct ServiceTreeNodeView: View {
             ServiceRowView(
                 service: service,
                 onViewLogs: { onViewLogs(service) },
-                leadingInset: indent
+                leadingInset: indent,
+                removeFromGroup: removeAction(memberID: service.id)
             )
             divider
 
         case .sequencedGroup(let group):
-            SequencedGroupRowView(group: group, leadingInset: indent, onEdit: { onEditGroup(group) })
+            SequencedGroupRowView(
+                group: group,
+                leadingInset: indent,
+                onEdit: { onEditGroup(group) },
+                removeFromGroup: removeAction(memberID: group.memberReferenceID)
+            )
             divider
 
         case .folder(let groupID):
-            FolderRowView(node: node, groupID: groupID, depth: depth, onEditGroup: onEditGroup)
+            FolderRowView(
+                node: node,
+                groupID: groupID,
+                depth: depth,
+                onEditGroup: onEditGroup,
+                removeFromGroup: groupID.flatMap { removeAction(memberID: "group:\($0.uuidString)") }
+            )
             divider
             if store.isExpanded(node.id) {
                 ForEach(node.children) { child in
                     ServiceTreeNodeView(
                         node: child,
                         depth: depth + 1,
+                        parentGroupID: groupID,
                         onEditGroup: onEditGroup,
                         onViewLogs: onViewLogs
                     )
                 }
             }
         }
+    }
+
+    /// Returns a closure that removes `memberID` from the parent group, or nil
+    /// when this node isn't inside a real group (root / Ungrouped bucket).
+    private func removeAction(memberID: String) -> (() -> Void)? {
+        guard let parentGroupID else { return nil }
+        return { store.removeMember(memberID, fromGroup: parentGroupID) }
     }
 
     private var divider: some View {
@@ -101,6 +123,7 @@ private struct FolderRowView: View {
     let groupID: UUID?
     let depth: Int
     var onEditGroup: (ServiceGroup) -> Void
+    var removeFromGroup: (() -> Void)? = nil
 
     @EnvironmentObject private var store: ServicesStore
     @State private var isWorking = false
@@ -185,6 +208,11 @@ private struct FolderRowView: View {
         .contextMenu {
             if let group {
                 Button { onEditGroup(group) } label: { Label("Edit Group", systemImage: "pencil") }
+                if let removeFromGroup {
+                    Button {
+                        removeFromGroup()
+                    } label: { Label("Remove from Group", systemImage: "minus.circle") }
+                }
                 Button(role: .destructive) {
                     store.removeGroup(id: group.id)
                 } label: { Label("Delete Group", systemImage: "trash") }
@@ -199,6 +227,7 @@ private struct SequencedGroupRowView: View {
     let group: ServiceGroup
     var leadingInset: CGFloat = 0
     var onEdit: () -> Void = {}
+    var removeFromGroup: (() -> Void)? = nil
 
     @EnvironmentObject private var store: ServicesStore
     @State private var isWorking = false
@@ -258,6 +287,11 @@ private struct SequencedGroupRowView: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button { onEdit() } label: { Label("Edit Group", systemImage: "pencil") }
+            if let removeFromGroup {
+                Button {
+                    removeFromGroup()
+                } label: { Label("Remove from Group", systemImage: "minus.circle") }
+            }
             Button(role: .destructive) {
                 store.removeGroup(id: group.id)
             } label: { Label("Delete Group", systemImage: "trash") }

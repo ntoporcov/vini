@@ -304,6 +304,13 @@ final class ServicesStore: ObservableObject {
         saveGroups()
     }
 
+    /// Remove a single member (a service id or "group:<uuid>") from a group.
+    func removeMember(_ memberID: String, fromGroup groupID: UUID) {
+        guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        groups[idx].memberServiceIDs.removeAll { $0 == memberID }
+        saveGroups()
+    }
+
     /// Would adding `candidateGroupID` as a member of `targetGroupID` create a
     /// cycle? (True if candidate already reaches target.)
     func wouldCreateCycle(addingGroup candidateGroupID: UUID, to targetGroupID: UUID) -> Bool {

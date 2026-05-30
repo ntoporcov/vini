@@ -6,6 +6,8 @@ struct ServiceRowView: View {
     var onViewLogs: () -> Void = {}
     /// Extra leading inset for tree indentation.
     var leadingInset: CGFloat = 0
+    /// Present when this row is inside a group; removes it from that group.
+    var removeFromGroup: (() -> Void)? = nil
     @EnvironmentObject private var store: ServicesStore
 
     var body: some View {
@@ -60,6 +62,14 @@ struct ServiceRowView: View {
                     onViewLogs()
                 } label: {
                     Label("View Logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Divider()
+            }
+            if let removeFromGroup {
+                Button {
+                    removeFromGroup()
+                } label: {
+                    Label("Remove from Group", systemImage: "minus.circle")
                 }
                 Divider()
             }

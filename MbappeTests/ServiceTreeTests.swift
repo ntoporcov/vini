@@ -114,8 +114,7 @@ final class ServiceTreeStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testRemoveGroupStripsReferencesFromOthers() {
-        let store = freshStore()
+    func testRemoveGroupStripsReferencesFromOthers() {        let store = freshStore()
         let inner = ServiceGroup(id: UUID(), name: "Inner", mode: .simultaneous, memberServiceIDs: [])
         store.addGroup(inner)
         let outer = ServiceGroup(name: "Outer", mode: .simultaneous, memberServiceIDs: [inner.memberReferenceID])
@@ -134,5 +133,21 @@ final class ServiceTreeStoreTests: XCTestCase {
 
         let storeB = ServicesStore()
         XCTAssertTrue(storeB.isExpanded("folder:test"))
+    }
+
+    @MainActor
+    func testRemoveMemberRemovesOnlyFromThatGroup() {
+        let store = freshStore()
+        store._setDiscoveredForTesting([svc("brew:redis", "Redis")])
+        let a = ServiceGroup(id: UUID(), name: "A", mode: .simultaneous, memberServiceIDs: ["brew:redis"])
+        let b = ServiceGroup(id: UUID(), name: "B", mode: .simultaneous, memberServiceIDs: ["brew:redis"])
+        store.addGroup(a)
+        store.addGroup(b)
+
+        store.removeMember("brew:redis", fromGroup: a.id)
+
+        XCTAssertEqual(store.group(withID: a.id)?.memberServiceIDs, [])
+        // Still present in B.
+        XCTAssertEqual(store.group(withID: b.id)?.memberServiceIDs, ["brew:redis"])
     }
 }
