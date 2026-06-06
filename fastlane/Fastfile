@@ -16,8 +16,13 @@ platform :mac do
     "cd #{repo_root.shellescape} && #{include_local}/opt/homebrew/bin/xcodegen generate"
   end
 
-  def required_env!(key)
+  def env_value(key)
     value = ENV[key]&.strip
+    value.nil? || value.empty? ? nil : value
+  end
+
+  def required_env!(key)
+    value = env_value(key)
     UI.user_error!("Missing #{key}. Copy fastlane/.env.default to fastlane/.env and fill it in.") if value.nil? || value.empty?
     value
   end
@@ -28,17 +33,17 @@ platform :mac do
   end
 
   def release_version(repo_root, options)
-    version = (options[:version] || ENV["VINI_RELEASE_VERSION"] || project_setting(repo_root, "MARKETING_VERSION")).to_s.strip
+    version = (options[:version] || env_value("VINI_RELEASE_VERSION") || project_setting(repo_root, "MARKETING_VERSION")).to_s.strip
     UI.user_error!("Release version is empty.") if version.empty?
     version
   end
 
   def release_tag(version)
-    (ENV["VINI_RELEASE_TAG"]&.strip || "").empty? ? "v#{version}" : ENV["VINI_RELEASE_TAG"].strip
+    env_value("VINI_RELEASE_TAG") || "v#{version}"
   end
 
   def github_repo
-    repo = (ENV["GITHUB_REPOSITORY"] || "ntoporcov/vini").strip
+    repo = env_value("GITHUB_REPOSITORY") || "ntoporcov/vini"
     UI.user_error!("GITHUB_REPOSITORY must be in owner/repo form.") unless repo.include?("/")
     repo
   end
@@ -53,13 +58,10 @@ platform :mac do
 
   # App Store Connect API key — also used by notarytool for notarization.
   def asc_api_key
-    key_id = ENV["APP_STORE_CONNECT_API_KEY_ID"]
-    issuer_id = ENV["APP_STORE_CONNECT_ISSUER_ID"]
-    key_content = ENV["APP_STORE_CONNECT_API_KEY_CONTENT"]&.strip
-    key_filepath = ENV["APP_STORE_CONNECT_API_KEY_PATH"]&.strip
-
-    key_content = nil if key_content&.empty?
-    key_filepath = nil if key_filepath&.empty?
+    key_id = env_value("APP_STORE_CONNECT_API_KEY_ID")
+    issuer_id = env_value("APP_STORE_CONNECT_ISSUER_ID")
+    key_content = env_value("APP_STORE_CONNECT_API_KEY_CONTENT")
+    key_filepath = env_value("APP_STORE_CONNECT_API_KEY_PATH")
 
     if key_content && key_filepath
       UI.important("Both APP_STORE_CONNECT_API_KEY_CONTENT and APP_STORE_CONNECT_API_KEY_PATH are set. Preferring APP_STORE_CONNECT_API_KEY_CONTENT.")
@@ -82,7 +84,7 @@ platform :mac do
   end
 
   def gh_bin
-    (ENV["GH_BIN"] || "gh").strip
+    env_value("GH_BIN") || "gh"
   end
 
   def validate_github_auth!(repo)
@@ -108,8 +110,8 @@ platform :mac do
   def publish_github_release(version, zip_path)
     repo = github_repo
     tag = release_tag(version)
-    title = (ENV["VINI_RELEASE_TITLE"] || "Vini #{version}").strip
-    notes_file = ENV["VINI_RELEASE_NOTES_FILE"]&.strip
+    title = env_value("VINI_RELEASE_TITLE") || "Vini #{version}"
+    notes_file = env_value("VINI_RELEASE_NOTES_FILE")
     prerelease = ENV["VINI_PRERELEASE"] == "1" ? " --prerelease" : ""
 
     validate_github_auth!(repo)
@@ -157,9 +159,9 @@ platform :mac do
   def update_homebrew_tap(repo_root, version, zip_path)
     return unless ENV["UPDATE_HOMEBREW_CASK"] == "1"
 
-    tap_repo = (ENV["HOMEBREW_TAP_REPO"] || "ntoporcov/homebrew-vini").strip
-    tap_remote = (ENV["HOMEBREW_TAP_REMOTE"] || "git@github.com:#{tap_repo}.git").strip
-    tap_path = (ENV["HOMEBREW_TAP_PATH"] || File.join(repo_root, "build", "homebrew-tap")).strip
+    tap_repo = env_value("HOMEBREW_TAP_REPO") || "ntoporcov/homebrew-vini"
+    tap_remote = env_value("HOMEBREW_TAP_REMOTE") || "git@github.com:#{tap_repo}.git"
+    tap_path = env_value("HOMEBREW_TAP_PATH") || File.join(repo_root, "build", "homebrew-tap")
     cask_path = File.join(tap_path, "Casks", "vini.rb")
 
     if File.directory?(File.join(tap_path, ".git"))
