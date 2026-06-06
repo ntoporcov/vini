@@ -62,6 +62,7 @@ platform :mac do
     issuer_id = env_value("APP_STORE_CONNECT_ISSUER_ID")
     key_content = env_value("APP_STORE_CONNECT_API_KEY_CONTENT")
     key_filepath = env_value("APP_STORE_CONNECT_API_KEY_PATH")
+    key_filepath = File.expand_path(key_filepath) if key_filepath
 
     if key_content && key_filepath
       UI.important("Both APP_STORE_CONNECT_API_KEY_CONTENT and APP_STORE_CONNECT_API_KEY_PATH are set. Preferring APP_STORE_CONNECT_API_KEY_CONTENT.")
