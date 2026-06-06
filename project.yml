@@ -2,7 +2,7 @@ include:
   - path: project.local.yml
     enable: ${INCLUDE_PROJECT_LOCAL_YAML}
 
-name: Mbappe
+name: Vini
 options:
   minimumXcodeGenVersion: 2.44.1
   deploymentTarget:
@@ -22,65 +22,67 @@ settings:
       SWIFT_OPTIMIZATION_LEVEL: -Onone
       ONLY_ACTIVE_ARCH: YES
 targets:
-  Mbappe:
+  Vini:
     type: application
     platform: macOS
     deploymentTarget: "14.0"
     sources:
-      - path: Mbappe
+      - path: Vini
         excludes:
           - AGENTS.md
           - "**/AGENTS.md"
           - Generated-Info.plist
+      - path: AppIcon.icon
+        buildPhase: resources
+        group: Vini
     preBuildScripts:
       - name: Validate bundle identifier
         script: |
-          if [ "$PRODUCT_BUNDLE_IDENTIFIER" != "com.ntoporcov.mbappe" ]; then
+          if [ "$PRODUCT_BUNDLE_IDENTIFIER" != "com.ntoporcov.vini" ]; then
             echo "error: Unexpected bundle identifier '$PRODUCT_BUNDLE_IDENTIFIER'. Regenerate the project from project.yml before building."
             exit 1
           fi
     info:
-      path: Mbappe/Generated-Info.plist
+      path: Vini/Generated-Info.plist
       properties:
-        CFBundleDisplayName: Mbappe
+        CFBundleDisplayName: Vini
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        LSUIElement: true
         LSApplicationCategoryType: public.app-category.developer-tools
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         ITSAppUsesNonExemptEncryption: false
         NSHumanReadableCopyright: "Copyright © 2026 Nicolas Toporcov. All rights reserved."
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.mbappe
-        PRODUCT_NAME: Mbappe
+        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.vini
+        PRODUCT_NAME: Vini
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_ENTITLEMENTS: Mbappe/Mbappe.entitlements
+        CODE_SIGN_ENTITLEMENTS: Vini/Vini.entitlements
         SWIFT_EMIT_LOC_STRINGS: YES
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
     scheme:
       gatherCoverageData: false
       testTargets:
-        - MbappeTests
-  MbappeTests:
+        - ViniTests
+  ViniTests:
     type: bundle.unit-test
     platform: macOS
     deploymentTarget: "14.0"
-    hostApplication: Mbappe
+    hostApplication: Vini
     sources:
-      - path: MbappeTests
+      - path: ViniTests
         excludes:
           - AGENTS.md
           - "**/AGENTS.md"
     dependencies:
-      - target: Mbappe
+      - target: Vini
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.mbappe.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.vini.tests
         CODE_SIGN_STYLE: Automatic
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mbappe.app/Contents/MacOS/Mbappe"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Vini.app/Contents/MacOS/Vini"
         BUNDLE_LOADER: "$(TEST_HOST)"

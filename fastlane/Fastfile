@@ -1,6 +1,8 @@
 require "shellwords"
 require "fileutils"
 
+opt_out_usage
+
 default_platform(:mac)
 
 platform :mac do
@@ -51,8 +53,8 @@ platform :mac do
   lane :build do
     sh(xcodegen_generate_command(repo_root))
     build_mac_app(
-      project: File.join(repo_root, "Mbappe.xcodeproj"),
-      scheme: "Mbappe",
+      project: File.join(repo_root, "Vini.xcodeproj"),
+      scheme: "Vini",
       configuration: "Debug",
       skip_archive: true,
       skip_package_pkg: true,
@@ -65,8 +67,8 @@ platform :mac do
   lane :archive do
     sh(xcodegen_generate_command(repo_root))
     build_mac_app(
-      project: File.join(repo_root, "Mbappe.xcodeproj"),
-      scheme: "Mbappe",
+      project: File.join(repo_root, "Vini.xcodeproj"),
+      scheme: "Vini",
       configuration: "Release",
       clean: true,
       export_method: "developer-id",
@@ -76,14 +78,14 @@ platform :mac do
       xcargs: "-allowProvisioningUpdates",
       export_xcargs: "-allowProvisioningUpdates",
       output_directory: "build/fastlane",
-      output_name: "Mbappe"
+      output_name: "Vini"
     )
   end
 
   desc "Notarize the Developer ID signed app and staple the ticket"
   lane :notarize_app do
     api_key = asc_api_key
-    app_path = File.join(repo_root, "build", "fastlane", "Mbappe.app")
+    app_path = File.join(repo_root, "build", "fastlane", "Vini.app")
     UI.user_error!("App not found at #{app_path}. Run `fastlane mac archive` first.") unless File.exist?(app_path)
 
     notarize(
@@ -99,8 +101,8 @@ platform :mac do
     archive
     notarize_app
 
-    app_path = File.join(repo_root, "build", "fastlane", "Mbappe.app")
-    zip_path = File.join(repo_root, "build", "fastlane", "Mbappe.zip")
+    app_path = File.join(repo_root, "build", "fastlane", "Vini.app")
+    zip_path = File.join(repo_root, "build", "fastlane", "Vini.zip")
     FileUtils.rm_f(zip_path)
     # ditto preserves code signature / notarization ticket inside the zip.
     sh("ditto -c -k --keepParent #{app_path.shellescape} #{zip_path.shellescape}")

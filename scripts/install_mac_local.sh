@@ -2,7 +2,7 @@
 #
 # install_mac_local.sh
 #
-# Builds the Mbappe macOS target with development signing, copies the
+# Builds the Vini macOS target with development signing, copies the
 # resulting `.app` into `/Applications`, and (optionally) launches it.
 #
 # Designed for fast on-this-Mac dev iteration. For distribution use
@@ -23,8 +23,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCHEME="Mbappe"
-PROJECT="Mbappe.xcodeproj"
+SCHEME="Vini"
+PROJECT="Vini.xcodeproj"
 DERIVED_DATA="${REPO_ROOT}/.derived-data-mac-local"
 INSTALL_DIR="/Applications"
 LAUNCH_AFTER_INSTALL=0
@@ -103,7 +103,7 @@ xcodebuild \
     -quiet \
     build
 
-APP_BUNDLE="${DERIVED_DATA}/Build/Products/Debug/Mbappe.app"
+APP_BUNDLE="${DERIVED_DATA}/Build/Products/Debug/Vini.app"
 if [[ ! -d "${APP_BUNDLE}" ]]; then
     echo "error: expected app bundle not found at ${APP_BUNDLE}" >&2
     exit 1
@@ -115,13 +115,13 @@ codesign --verify --verbose=2 "${APP_BUNDLE}" || {
     exit 1
 }
 
-DEST="${INSTALL_DIR}/Mbappe.app"
+DEST="${INSTALL_DIR}/Vini.app"
 
-# Quit any running Mbappe instance gracefully before replacing the bundle.
-PROC_MATCH='Mbappe\.app/Contents/MacOS/Mbappe'
+# Quit any running Vini instance gracefully before replacing the bundle.
+PROC_MATCH='Vini\.app/Contents/MacOS/Vini'
 if pgrep -f "${PROC_MATCH}" >/dev/null 2>&1; then
-    echo "==> Quitting running Mbappe"
-    osascript -e 'tell application "Mbappe" to quit' >/dev/null 2>&1 || true
+    echo "==> Quitting running Vini"
+    osascript -e 'tell application "Vini" to quit' >/dev/null 2>&1 || true
     for _ in 1 2 3 4 5 6; do
         pgrep -f "${PROC_MATCH}" >/dev/null 2>&1 || break
         sleep 0.5

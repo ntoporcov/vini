@@ -1,3 +1,3 @@
-app_identifier("com.ntoporcov.mbappe")
+app_identifier("com.ntoporcov.vini")
 apple_id(ENV["FASTLANE_APPLE_ID"]) if ENV["FASTLANE_APPLE_ID"]
 team_id(ENV["FASTLANE_TEAM_ID"]) if ENV["FASTLANE_TEAM_ID"]

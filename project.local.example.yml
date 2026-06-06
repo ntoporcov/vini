@@ -5,7 +5,7 @@ settings:
 # You can also override other machine-local signing values here if needed.
 # Example:
 # targets:
-#   Mbappe:
+#   Vini:
 #     settings:
 #       base:
 #         CODE_SIGN_STYLE: Automatic
