@@ -1,5 +1,7 @@
 require "shellwords"
 require "fileutils"
+require "digest"
+require "yaml"
 
 opt_out_usage
 
@@ -12,6 +14,41 @@ platform :mac do
     local_override = File.join(repo_root, "project.local.yml")
     include_local = File.exist?(local_override) ? "INCLUDE_PROJECT_LOCAL_YAML=1 " : ""
     "cd #{repo_root.shellescape} && #{include_local}/opt/homebrew/bin/xcodegen generate"
+  end
+
+  def required_env!(key)
+    value = ENV[key]&.strip
+    UI.user_error!("Missing #{key}. Copy fastlane/.env.default to fastlane/.env and fill it in.") if value.nil? || value.empty?
+    value
+  end
+
+  def project_setting(repo_root, key)
+    settings = YAML.load_file(File.join(repo_root, "project.yml"))
+    settings.fetch("settings").fetch("base").fetch(key).to_s
+  end
+
+  def release_version(repo_root, options)
+    version = (options[:version] || ENV["VINI_RELEASE_VERSION"] || project_setting(repo_root, "MARKETING_VERSION")).to_s.strip
+    UI.user_error!("Release version is empty.") if version.empty?
+    version
+  end
+
+  def release_tag(version)
+    (ENV["VINI_RELEASE_TAG"]&.strip || "").empty? ? "v#{version}" : ENV["VINI_RELEASE_TAG"].strip
+  end
+
+  def github_repo
+    repo = (ENV["GITHUB_REPOSITORY"] || "ntoporcov/vini").strip
+    UI.user_error!("GITHUB_REPOSITORY must be in owner/repo form.") unless repo.include?("/")
+    repo
+  end
+
+  def release_zip_path(repo_root, version)
+    File.join(repo_root, "build", "fastlane", "Vini-#{version}.zip")
+  end
+
+  def github_release_url(version)
+    "https://github.com/#{github_repo}/releases/tag/#{release_tag(version)}"
   end
 
   # App Store Connect API key — also used by notarytool for notarization.
@@ -44,6 +81,110 @@ platform :mac do
     )
   end
 
+  def gh_bin
+    (ENV["GH_BIN"] || "gh").strip
+  end
+
+  def validate_github_auth!(repo)
+    expected_owner = repo.split("/").first
+    login = sh("#{gh_bin.shellescape} api user --jq .login", log: false).strip
+    return if login == expected_owner
+
+    UI.user_error!("gh is authenticated as '#{login}', but this release targets '#{repo}'. Set GH_TOKEN for '#{expected_owner}' or switch gh auth.")
+  end
+
+  def package_release_app(repo_root, version)
+    app_path = File.join(repo_root, "build", "fastlane", "Vini.app")
+    zip_path = release_zip_path(repo_root, version)
+    UI.user_error!("App not found at #{app_path}. Run `bundle exec fastlane mac archive` first.") unless File.exist?(app_path)
+
+    FileUtils.rm_f(zip_path)
+    # ditto preserves code signature / notarization ticket inside the zip.
+    sh("ditto -c -k --keepParent #{app_path.shellescape} #{zip_path.shellescape}")
+    UI.success("Distributable archive ready: #{zip_path}")
+    zip_path
+  end
+
+  def publish_github_release(version, zip_path)
+    repo = github_repo
+    tag = release_tag(version)
+    title = (ENV["VINI_RELEASE_TITLE"] || "Vini #{version}").strip
+    notes_file = ENV["VINI_RELEASE_NOTES_FILE"]&.strip
+    prerelease = ENV["VINI_PRERELEASE"] == "1" ? " --prerelease" : ""
+
+    validate_github_auth!(repo)
+
+    if system("#{gh_bin.shellescape} release view #{tag.shellescape} --repo #{repo.shellescape} >/dev/null 2>&1")
+      sh("#{gh_bin.shellescape} release upload #{tag.shellescape} #{zip_path.shellescape} --repo #{repo.shellescape} --clobber")
+      UI.success("Updated GitHub release asset: #{github_release_url(version)}")
+      return
+    end
+
+    notes_args = if notes_file && !notes_file.empty?
+                   "--notes-file #{notes_file.shellescape}"
+                 else
+                   "--generate-notes"
+                 end
+    sh("#{gh_bin.shellescape} release create #{tag.shellescape} #{zip_path.shellescape} --repo #{repo.shellescape} --title #{title.shellescape} #{notes_args}#{prerelease}")
+    UI.success("Created GitHub release: #{github_release_url(version)}")
+  end
+
+  def homebrew_cask(version, sha256)
+    tag = release_tag(version)
+    url = "https://github.com/#{github_repo}/releases/download/#{tag}/Vini-#{version}.zip"
+    <<~CASK
+      cask "vini" do
+        version "#{version}"
+        sha256 "#{sha256}"
+
+        url "#{url}",
+            verified: "github.com/#{github_repo}/"
+        name "Vini"
+        desc "Menu bar command center for local services"
+        homepage "https://github.com/#{github_repo}"
+
+        app "Vini.app"
+
+        zap trash: [
+          "~/Library/Application Support/Vini",
+          "~/Library/Preferences/com.ntoporcov.vini.plist",
+          "~/Library/Saved Application State/com.ntoporcov.vini.savedState",
+        ]
+      end
+    CASK
+  end
+
+  def update_homebrew_tap(repo_root, version, zip_path)
+    return unless ENV["UPDATE_HOMEBREW_CASK"] == "1"
+
+    tap_repo = (ENV["HOMEBREW_TAP_REPO"] || "ntoporcov/homebrew-vini").strip
+    tap_remote = (ENV["HOMEBREW_TAP_REMOTE"] || "git@github.com:#{tap_repo}.git").strip
+    tap_path = (ENV["HOMEBREW_TAP_PATH"] || File.join(repo_root, "build", "homebrew-tap")).strip
+    cask_path = File.join(tap_path, "Casks", "vini.rb")
+
+    if File.directory?(File.join(tap_path, ".git"))
+      sh("git -C #{tap_path.shellescape} fetch origin")
+      sh("git -C #{tap_path.shellescape} checkout main")
+      sh("git -C #{tap_path.shellescape} pull --ff-only")
+    else
+      FileUtils.rm_rf(tap_path)
+      sh("git clone #{tap_remote.shellescape} #{tap_path.shellescape}")
+    end
+
+    FileUtils.mkdir_p(File.dirname(cask_path))
+    File.write(cask_path, homebrew_cask(version, Digest::SHA256.file(zip_path).hexdigest))
+    sh("git -C #{tap_path.shellescape} add #{cask_path.shellescape}")
+
+    if system("git -C #{tap_path.shellescape} diff --cached --quiet")
+      UI.message("Homebrew cask already up to date.")
+      return
+    end
+
+    sh("git -C #{tap_path.shellescape} commit -m #{"Update Vini to #{version}".shellescape}")
+    sh("git -C #{tap_path.shellescape} push origin HEAD")
+    UI.success("Updated Homebrew tap: #{tap_repo}")
+  end
+
   before_all do
     ENV["LANG"] ||= "en_US.UTF-8"
     ENV["LC_ALL"] ||= "en_US.UTF-8"
@@ -65,6 +206,7 @@ platform :mac do
 
   desc "Build a Developer ID signed release archive (.app) for direct distribution"
   lane :archive do
+    team_id = required_env!("FASTLANE_TEAM_ID")
     sh(xcodegen_generate_command(repo_root))
     build_mac_app(
       project: File.join(repo_root, "Vini.xcodeproj"),
@@ -75,8 +217,9 @@ platform :mac do
       export_options: {
         signingStyle: "automatic"
       },
-      xcargs: "-allowProvisioningUpdates",
-      export_xcargs: "-allowProvisioningUpdates",
+      export_team_id: team_id,
+      xcargs: "-allowProvisioningUpdates DEVELOPMENT_TEAM=#{team_id.shellescape}",
+      export_xcargs: "-allowProvisioningUpdates DEVELOPMENT_TEAM=#{team_id.shellescape}",
       output_directory: "build/fastlane",
       output_name: "Vini"
     )
@@ -96,16 +239,14 @@ platform :mac do
     UI.success("Notarized and stapled: #{app_path}")
   end
 
-  desc "Full release: archive + notarize + zip a distributable artifact"
-  lane :release do
+  desc "Full release: archive + notarize + zip + GitHub release (+ optional Homebrew tap)"
+  lane :release do |options|
+    version = release_version(repo_root, options)
     archive
     notarize_app
 
-    app_path = File.join(repo_root, "build", "fastlane", "Vini.app")
-    zip_path = File.join(repo_root, "build", "fastlane", "Vini.zip")
-    FileUtils.rm_f(zip_path)
-    # ditto preserves code signature / notarization ticket inside the zip.
-    sh("ditto -c -k --keepParent #{app_path.shellescape} #{zip_path.shellescape}")
-    UI.success("Distributable archive ready: #{zip_path}")
+    zip_path = package_release_app(repo_root, version)
+    publish_github_release(version, zip_path)
+    update_homebrew_tap(repo_root, version, zip_path)
   end
 end

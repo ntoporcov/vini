@@ -45,7 +45,7 @@ Notarize the Developer ID signed app and staple the ticket
 [bundle exec] fastlane mac release
 ```
 
-Full release: archive + notarize + zip a distributable artifact
+Full release: archive + notarize + zip + GitHub release (+ optional Homebrew tap)
 
 ----
 
