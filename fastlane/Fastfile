@@ -133,15 +133,13 @@ platform :mac do
   end
 
   def homebrew_cask(version, sha256)
-    tag = release_tag(version)
-    url = "https://github.com/#{github_repo}/releases/download/#{tag}/Vini-#{version}.zip"
+    tag_prefix = release_tag(version).delete_suffix(version)
     <<~CASK
       cask "vini" do
         version "#{version}"
         sha256 "#{sha256}"
 
-        url "#{url}",
-            verified: "github.com/#{github_repo}/"
+        url "https://github.com/#{github_repo}/releases/download/#{tag_prefix}\#{version}/Vini-\#{version}.zip"
         name "Vini"
         desc "Menu bar command center for local services"
         homepage "https://github.com/#{github_repo}"
