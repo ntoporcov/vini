@@ -234,11 +234,18 @@ platform :mac do
     app_path = File.join(repo_root, "build", "fastlane", "Vini.app")
     UI.user_error!("App not found at #{app_path}. Run `fastlane mac archive` first.") unless File.exist?(app_path)
 
-    notarize(
-      package: app_path,
-      api_key: api_key,
-      print_log: true
-    )
+    saved_api_key_path_env = ENV.delete("APP_STORE_CONNECT_API_KEY_PATH")
+    saved_fl_notarize_key_path_env = ENV.delete("FL_NOTARIZE_API_KEY_PATH")
+    begin
+      notarize(
+        package: app_path,
+        api_key: api_key,
+        print_log: true
+      )
+    ensure
+      ENV["APP_STORE_CONNECT_API_KEY_PATH"] = saved_api_key_path_env if saved_api_key_path_env
+      ENV["FL_NOTARIZE_API_KEY_PATH"] = saved_fl_notarize_key_path_env if saved_fl_notarize_key_path_env
+    end
     UI.success("Notarized and stapled: #{app_path}")
   end
 
