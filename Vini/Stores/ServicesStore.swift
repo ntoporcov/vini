@@ -59,12 +59,16 @@ final class ServicesStore: ObservableObject {
     /// Groups currently running a bulk start/stop/restart action.
     @Published private(set) var workingGroupIDs: Set<UUID> = []
 
+    /// Whether the in-app MCP server should accept local agent connections.
+    @Published private(set) var isMCPServerEnabled: Bool = false
+
     private let userDefinitionsKey = "vini.userDefinitions"
     private let hiddenServiceIDsKey = "vini.hiddenServiceIDs"
     private let surfacedServiceIDsKey = "vini.surfacedServiceIDs"
     private let groupsKey = "vini.groups"
     private let expandedNodeIDsKey = "vini.expandedNodeIDs"
     private let serviceOrderIDsKey = "vini.serviceOrderIDs"
+    private let mcpServerEnabledKey = "vini.mcpServerEnabled"
 
     /// Backing store for persistence. Injectable so tests never touch the real
     /// app preferences domain.
@@ -87,6 +91,7 @@ final class ServicesStore: ObservableObject {
         loadGroups()
         loadExpandedNodeIDs()
         loadServiceOrderIDs()
+        loadMCPServerEnabled()
     }
 
     // MARK: - Derived collections (for the Manage view)
@@ -251,6 +256,14 @@ final class ServicesStore: ObservableObject {
 
     func clearError() {
         lastError = nil
+    }
+
+    // MARK: - MCP
+
+    func setMCPServerEnabled(_ enabled: Bool) {
+        guard isMCPServerEnabled != enabled else { return }
+        isMCPServerEnabled = enabled
+        saveMCPServerEnabled()
     }
 
     // MARK: - Hide / unhide (catalog services)
@@ -765,6 +778,16 @@ final class ServicesStore: ObservableObject {
     private func saveServiceOrderIDs() {
         guard mode == .normal else { return }
         defaults.set(serviceOrderIDs, forKey: serviceOrderIDsKey)
+        flushDefaults()
+    }
+
+    private func loadMCPServerEnabled() {
+        isMCPServerEnabled = defaults.bool(forKey: mcpServerEnabledKey)
+    }
+
+    private func saveMCPServerEnabled() {
+        guard mode == .normal else { return }
+        defaults.set(isMCPServerEnabled, forKey: mcpServerEnabledKey)
         flushDefaults()
     }
 

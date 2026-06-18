@@ -22,6 +22,7 @@ struct SettingsView: View {
 // MARK: - General
 
 private struct GeneralSettingsTab: View {
+    @EnvironmentObject private var store: ServicesStore
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("refreshInterval") private var refreshInterval: Double = 5.0
 
@@ -38,6 +39,43 @@ private struct GeneralSettingsTab: View {
                     Text("10 seconds").tag(10.0)
                     Text("30 seconds").tag(30.0)
                 }
+            }
+
+            Section("MCP Server") {
+                Toggle(
+                    "Enable local MCP server",
+                    isOn: Binding(
+                        get: { store.isMCPServerEnabled },
+                        set: { store.setMCPServerEnabled($0) }
+                    )
+                )
+
+                Text(store.isMCPServerEnabled ? "Vini is listening for local MCP clients while the app is running." : "Enable this to let local AI agents control your Vini services.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Client configuration")
+                            .font(.subheadline.weight(.medium))
+                        Spacer()
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(ViniMCPConfiguration.clientConfigurationJSON, forType: .string)
+                        }
+                    }
+
+                    Text(ViniMCPConfiguration.clientConfigurationJSON)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                }
+
+                Text("Use this JSON in Claude Code, Codex, OpenCode, or any MCP client that supports stdio servers. Vini must be running and the server must be enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

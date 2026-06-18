@@ -8,6 +8,7 @@ struct LogContentView: View {
     var compact: Bool = false
 
     @State private var autoScroll = true
+    @State private var showFindBar = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +16,10 @@ struct LogContentView: View {
             Divider()
             logBody
         }
-        .onAppear { session.start() }
+        .onAppear {
+            session.setFontSize(compact ? 10 : 12)
+            session.start()
+        }
         .onDisappear { session.stop() }
     }
 
@@ -39,6 +43,14 @@ struct LogContentView: View {
                 .toggleStyle(.checkbox)
                 .font(.caption2)
             Button {
+                showFindBar.toggle()
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Find (⌘F)")
+            .keyboardShortcut("f", modifiers: .command)
+            Button {
                 session.clear()
             } label: {
                 Image(systemName: "trash")
@@ -60,50 +72,46 @@ struct LogContentView: View {
     }
 
     private var logBody: some View {
-        GeometryReader { geometry in
-            ScrollViewReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    if session.text.isEmpty {
-                        Text("No output yet.")
-                            .font(.system(size: compact ? 10 : 12, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(
-                                minWidth: geometry.size.width,
-                                minHeight: geometry.size.height,
-                                alignment: .topLeading
-                            )
-                            .padding(8)
-                            .id("logBottom")
-                    } else {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(session.lines.enumerated()), id: \.offset) { _, line in
-                                Text(line.isEmpty ? " " : line)
-                                    .font(.system(size: compact ? 10 : 12, design: .monospaced))
-                                    .foregroundStyle(.primary)
-                                    .textSelection(.enabled)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
-                            Color.clear
-                                .frame(width: 1, height: 1)
-                                .id("logBottom")
-                        }
-                        .frame(
-                            minWidth: geometry.size.width,
-                            minHeight: geometry.size.height,
-                            alignment: .topLeading
-                        )
+        ZStack(alignment: .bottom) {
+            Group {
+                if session.text.isEmpty {
+                    Text("No output yet.")
+                        .font(.system(size: compact ? 10 : 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .padding(8)
-                    }
-                }
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-                .onChange(of: session.lines.count) {
-                    if autoScroll {
-                        withAnimation(.linear(duration: 0.1)) {
-                            proxy.scrollTo("logBottom", anchor: .bottom)
-                        }
-                    }
+                } else {
+                    LogTextView(
+                        attributedText: session.attributedText,
+                        fontSize: compact ? 10 : 12,
+                        autoScroll: $autoScroll,
+                        showFindBar: $showFindBar
+                    )
                 }
             }
+
+            if !autoScroll && !session.text.isEmpty {
+                Button {
+                    autoScroll = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.down")
+                            .font(.caption)
+                        Text("Scroll to bottom")
+                            .font(.caption)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().stroke(Color.primary.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                .padding(.bottom, 12)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .animation(.easeInOut(duration: 0.2), value: autoScroll)
+            }
         }
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
     }
 }

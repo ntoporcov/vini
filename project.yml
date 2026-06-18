@@ -10,6 +10,10 @@ options:
   fileTypes:
     icon:
       file: true
+packages:
+  swift-sdk:
+    url: https://github.com/modelcontextprotocol/swift-sdk.git
+    from: 0.11.0
 settings:
   base:
     SWIFT_VERSION: 6.0
@@ -35,6 +39,10 @@ targets:
       - path: AppIcon.icon
         buildPhase: resources
         group: Vini
+    dependencies:
+      - target: ViniMCP
+      - package: swift-sdk
+        product: MCP
     preBuildScripts:
       - name: Validate bundle identifier
         script: |
@@ -42,6 +50,18 @@ targets:
             echo "error: Unexpected bundle identifier '$PRODUCT_BUNDLE_IDENTIFIER'. Regenerate the project from project.yml before building."
             exit 1
           fi
+    postBuildScripts:
+      - name: Embed ViniMCP helper
+        script: |
+          set -euo pipefail
+          helper_dir="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          mkdir -p "$helper_dir"
+          cp "$BUILT_PRODUCTS_DIR/ViniMCP" "$helper_dir/ViniMCP"
+          chmod 755 "$helper_dir/ViniMCP"
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/ViniMCP
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/ViniMCP
     info:
       path: Vini/Generated-Info.plist
       properties:
@@ -67,6 +87,18 @@ targets:
       gatherCoverageData: false
       testTargets:
         - ViniTests
+  ViniMCP:
+    type: tool
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ViniMCP
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ntoporcov.vini.mcp
+        PRODUCT_NAME: ViniMCP
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
   ViniTests:
     type: bundle.unit-test
     platform: macOS

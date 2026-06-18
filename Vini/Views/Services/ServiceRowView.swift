@@ -165,7 +165,7 @@ private extension ViniService {
 
 // MARK: - Status Badge
 
-private struct StatusBadge: View {
+struct StatusBadge: View {
     let status: ServiceStatus
 
     var body: some View {
@@ -191,7 +191,7 @@ private struct StatusBadge: View {
 
 // MARK: - Action Buttons
 
-private struct ServiceActionButtons: View {
+struct ServiceActionButtons: View {
     let service: ViniService
     @EnvironmentObject private var store: ServicesStore
 

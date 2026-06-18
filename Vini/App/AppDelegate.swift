@@ -1,25 +1,35 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let servicesStore: ServicesStore
     private var menuBarManager: MenuBarManager?
+    private let mcpServer: ViniMCPServer
+    private var cancellables: Set<AnyCancellable> = []
     private var isTerminating = false
 
     override init() {
         servicesStore = ServicesStore(mode: .current)
+        mcpServer = ViniMCPServer(servicesStore: servicesStore)
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Start as a menu-bar/accessory app; the main window temporarily promotes
-        // the activation policy so it appears in the Dock while visible.
-        NSApp.setActivationPolicy(servicesStore.isScreenshotMode ? .regular : .accessory)
-        if servicesStore.isScreenshotMode {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        // The main Window scene opens automatically on launch, so start with
+        // .regular so the app appears in the Dock and Cmd-Tab immediately.
+        // When the main window closes, MainWindowView.onDisappear demotes back
+        // to .accessory.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         menuBarManager = MenuBarManager(servicesStore: servicesStore)
+        observeMCPServerSetting()
+
+        if servicesStore.isMCPServerEnabled && !servicesStore.isScreenshotMode {
+            Task { await setMCPServerRunning(true) }
+        }
 
         // Re-adopt any kept-alive processes from a previous launch, then refresh.
         Task {
@@ -38,9 +48,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Stop non-keep-alive processes before quitting; keep-alive ones are
         // persisted for re-adoption on the next launch.
         Task {
+            await mcpServer.stop()
             await servicesStore.handleAppTermination()
             NSApplication.shared.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func observeMCPServerSetting() {
+        servicesStore.$isMCPServerEnabled
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                Task { await self.setMCPServerRunning(enabled) }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func setMCPServerRunning(_ running: Bool) async {
+        guard !servicesStore.isScreenshotMode else { return }
+        if running {
+            do {
+                try await mcpServer.start()
+            } catch {
+                NSLog("Failed to start Vini MCP server: \(error.localizedDescription)")
+            }
+        } else {
+            await mcpServer.stop()
+        }
     }
 }

@@ -147,8 +147,6 @@ private struct MenuBarFooterView: View {
     @EnvironmentObject private var store: ServicesStore
     let onManage: () -> Void
 
-    private let settingsWindowIdentifier = NSUserInterfaceItemIdentifier("com.ntoporcov.vini.settings")
-
     var body: some View {
         HStack {
             Button {
@@ -172,7 +170,7 @@ private struct MenuBarFooterView: View {
             Spacer()
 
             Button("Settings") {
-                showSettingsWindow()
+                SettingsWindowManager.shared.show(servicesStore: store)
             }
             .font(.caption)
             .buttonStyle(.borderless)
@@ -186,33 +184,6 @@ private struct MenuBarFooterView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-    }
-
-    private func showSettingsWindow() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-
-        Task { @MainActor in
-            for delay in [0, 50_000_000, 200_000_000] {
-                if delay > 0 {
-                    try? await Task.sleep(nanoseconds: UInt64(delay))
-                }
-                NSApp.activate(ignoringOtherApps: true)
-                bringSettingsWindowToFront()
-            }
-        }
-    }
-
-    private func bringSettingsWindowToFront() {
-        NSApp.windows
-            .filter { window in
-                window.identifier == settingsWindowIdentifier
-                    || window.title.localizedCaseInsensitiveContains("settings")
-            }
-            .forEach { window in
-                window.identifier = settingsWindowIdentifier
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
     }
 }
 

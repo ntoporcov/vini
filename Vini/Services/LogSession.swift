@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -14,6 +15,7 @@ final class LogSession: ObservableObject {
 
     @Published private(set) var text: String = ""
     @Published private(set) var lines: [String] = []
+    @Published private(set) var attributedText: NSAttributedString = NSAttributedString()
     /// True when this Vini instance owns the process and is actively writing
     /// the log. False for re-adopted/detached processes (historic only).
     @Published var isLiveCaptureAvailable: Bool
@@ -135,10 +137,33 @@ final class LogSession: ObservableObject {
         }
     }
 
+    private var cachedFont: NSFont?
+
     private func setText(_ newText: String) {
         let trimmed = trimmedToDisplayLimit(newText)
         text = trimmed
         lines = splitLines(trimmed)
+        rebuildAttributedText(trimmed)
+    }
+
+    private func rebuildAttributedText(_ rawText: String) {
+        let font = cachedFont ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        cachedFont = font
+        attributedText = ANSIParser.attributedString(
+            from: rawText,
+            font: font,
+            defaultForeground: .labelColor,
+            defaultBackground: .clear
+        )
+    }
+
+    /// Update the font size used for attributed text (call when compact mode differs).
+    func setFontSize(_ size: CGFloat) {
+        let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        cachedFont = font
+        if !text.isEmpty {
+            rebuildAttributedText(text)
+        }
     }
 
     private func appendText(_ newText: String) {
