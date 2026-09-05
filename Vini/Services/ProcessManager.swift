@@ -22,7 +22,14 @@ actor ProcessManager {
     static let shared = ProcessManager()
 
     private enum Tracked {
-        case owned(process: Process, pipe: Pipe, command: String, startedAt: Date)
+        case owned(
+            process: Process,
+            pipe: Pipe,
+            reader: PipeLogReader,
+            command: String,
+            startedAt: Date,
+            pgid: pid_t
+        )
         case adopted(pid: Int32, command: String, startedAt: Date)
     }
 
@@ -89,70 +96,111 @@ actor ProcessManager {
         env["PATH"] = Shell.toolSearchPath(currentPath: env["PATH"], workingDirectory: dir)
         process.environment = env
 
-        // Capture stdout + stderr into the service's log file.
+        // Capture stdout + stderr into the service's log file. `PipeLogReader`
+        // owns the EOF teardown that keeps an exited process from spinning a core.
         LogFileManager.writeSessionHeader(serviceID, command: command)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
         let capturedID = serviceID
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            LogFileManager.append(capturedID, text: String(decoding: data, as: UTF8.self))
-        }
+        let reader = PipeLogReader(
+            handle: pipe.fileHandleForReading,
+            sink: LogSink(serviceID: capturedID)
+        )
+        reader.start()
 
         do {
             try process.run()
         } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
+            reader.stop()
             throw ProcessManagerError.launchFailed(error.localizedDescription)
         }
 
         let startedAt = Date()
-        running[serviceID] = .owned(process: process, pipe: pipe, command: command, startedAt: startedAt)
+        let pid = process.processIdentifier
+        // Foundation launches children as process-group leaders, so this is
+        // normally == pid. Recorded up front because it cannot be read back once
+        // the process has exited.
+        let pgid = getpgid(pid) > 0 ? getpgid(pid) : pid
+
+        // Without this, a child that exits on its own (crash, short-lived command)
+        // leaves its pipe at EOF and its tracking entry behind forever.
+        process.terminationHandler = { [weak self] proc in
+            proc.terminationHandler = nil
+            Task { await self?.handleChildExit(serviceID: capturedID, pid: proc.processIdentifier) }
+        }
+
+        running[serviceID] = .owned(
+            process: process,
+            pipe: pipe,
+            reader: reader,
+            command: command,
+            startedAt: startedAt,
+            pgid: pgid
+        )
 
         if keepAlive {
             persist(PersistedProcess(
                 serviceID: serviceID,
-                pid: process.processIdentifier,
+                pid: pid,
                 command: command,
                 startedAt: startedAt
             ))
         }
     }
 
-    /// Stop the tracked process for `serviceID`. No-op if not running.
-    func stop(serviceID: String) {
-        guard let entry = running[serviceID] else { return }
-        defer {
-            if case .owned(_, let pipe, _, _) = entry {
-                pipe.fileHandleForReading.readabilityHandler = nil
-            }
-            running[serviceID] = nil
-            removePersisted(serviceID: serviceID)
+    /// Called when the directly-launched wrapper shell exits.
+    ///
+    /// The service itself may still be up — a command that backgrounds or disowns
+    /// its real server leaves live members in the same process group — so tracking
+    /// is only released once the whole group is gone.
+    private func handleChildExit(serviceID: String, pid: pid_t) {
+        guard let entry = running[serviceID],
+              case .owned(let process, _, let reader, _, _, let pgid) = entry,
+              process.processIdentifier == pid
+        else { return }
+
+        if !Self.treeMembers(rootPID: pid, pgid: pgid).isEmpty {
+            // Survivors still hold the write end of the pipe; keep capturing.
+            return
         }
-        guard isAlive(entry) else { return }
+
+        reader.stop()
+        running[serviceID] = nil
+        removePersisted(serviceID: serviceID)
+    }
+
+    /// Stop the tracked process for `serviceID`. No-op if not tracked.
+    ///
+    /// Signals the entire process group plus any descendant that escaped it, so a
+    /// wrapper shell dying does not leave an orphaned `node`/`vite` holding a port.
+    /// Tracking is released immediately (before the grace period) so the UI stays
+    /// responsive and re-entrant calls become no-ops.
+    func stop(serviceID: String) async {
+        guard let entry = running[serviceID] else { return }
+
+        // Release tracking up front: this method suspends below, and leaving the
+        // entry in place would let concurrent callers signal the same tree twice.
+        running[serviceID] = nil
+        removePersisted(serviceID: serviceID)
+        if case .owned(_, _, let reader, _, _, _) = entry {
+            reader.stop()
+        }
 
         let pid = pidOf(entry)
-        // Terminate the whole process group first; fall back to the process/pid.
-        if killpg(pid, SIGTERM) != 0 {
-            if case .owned(let process, _, _, _) = entry {
-                process.terminate()
-            } else {
-                kill(pid, SIGTERM)
-            }
-        }
+        let pgid = pgidOf(entry)
+        guard pid > 1 else { return }
 
-        // Wait briefly, then force-kill if still alive.
+        Self.signalTree(rootPID: pid, pgid: pgid, signal: SIGTERM)
+
+        // Grace period. `Task.sleep` (not `Thread.sleep`) so the actor stays
+        // available — blocking it here is what made start/stop feel dead.
         let deadline = Date().addingTimeInterval(3)
-        while isAlive(entry) && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.1)
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            if Self.treeMembers(rootPID: pid, pgid: pgid).isEmpty { return }
         }
-        if isAlive(entry) {
-            if killpg(pid, SIGKILL) != 0 {
-                kill(pid, SIGKILL)
-            }
-        }
+        Self.signalTree(rootPID: pid, pgid: pgid, signal: SIGKILL)
     }
 
     // MARK: - Teardown / quit
@@ -160,7 +208,8 @@ actor ProcessManager {
     /// Stop only services NOT in `keepAliveServiceIDs`. Kept-alive owned processes
     /// are left running, and their persisted records are refreshed so the next
     /// launch can re-adopt them.
-    func handleAppTermination(keepAliveServiceIDs: Set<String>) {
+    func handleAppTermination(keepAliveServiceIDs: Set<String>) async {
+        // Snapshot: `stop` mutates `running` and suspends.
         for (id, entry) in running {
             if keepAliveServiceIDs.contains(id) {
                 // Leave it running; ensure it is persisted for re-adoption.
@@ -172,16 +221,24 @@ actor ProcessManager {
                         startedAt: startedAtOf(entry)
                     ))
                 }
-            } else {
-                stop(serviceID: id)
+            }
+        }
+
+        let doomed = running.keys.filter { !keepAliveServiceIDs.contains($0) }
+        // Concurrently, so quitting costs one grace period rather than 3s per service.
+        await withTaskGroup(of: Void.self) { group in
+            for id in doomed {
+                group.addTask { await self.stop(serviceID: id) }
             }
         }
     }
 
     /// Stop every tracked process unconditionally.
-    func stopAll() {
-        for id in running.keys {
-            stop(serviceID: id)
+    func stopAll() async {
+        await withTaskGroup(of: Void.self) { group in
+            for id in running.keys {
+                group.addTask { await self.stop(serviceID: id) }
+            }
         }
     }
 
@@ -245,8 +302,12 @@ actor ProcessManager {
 
     private func isAlive(_ entry: Tracked) -> Bool {
         switch entry {
-        case .owned(let process, _, _, _):
-            return process.isRunning
+        case .owned(let process, _, _, _, _, let pgid):
+            if process.isRunning { return true }
+            // The wrapper shell can exit while the real server keeps running in the
+            // same process group (backgrounded / disowned commands), so a dead
+            // direct child does not mean the service is down.
+            return !Self.treeMembers(rootPID: process.processIdentifier, pgid: pgid).isEmpty
         case .adopted(let pid, _, _):
             return kill(pid, 0) == 0
         }
@@ -254,22 +315,80 @@ actor ProcessManager {
 
     private func pidOf(_ entry: Tracked) -> Int32 {
         switch entry {
-        case .owned(let process, _, _, _): process.processIdentifier
+        case .owned(let process, _, _, _, _, _): process.processIdentifier
         case .adopted(let pid, _, _):   pid
+        }
+    }
+
+    /// Process-group id to signal. Recorded at launch for owned processes; resolved
+    /// live for adopted ones (their group was not persisted).
+    private func pgidOf(_ entry: Tracked) -> pid_t {
+        switch entry {
+        case .owned(_, _, _, _, _, let pgid):
+            return pgid
+        case .adopted(let pid, _, _):
+            let pgid = getpgid(pid)
+            return pgid > 0 ? pgid : pid
         }
     }
 
     private func commandOf(_ entry: Tracked) -> String {
         switch entry {
-        case .owned(_, _, let command, _):   command
+        case .owned(_, _, _, let command, _, _):   command
         case .adopted(_, let command, _): command
         }
     }
 
     private func startedAtOf(_ entry: Tracked) -> Date {
         switch entry {
-        case .owned(_, _, _, let startedAt):   startedAt
+        case .owned(_, _, _, _, let startedAt, _):   startedAt
         case .adopted(_, _, let startedAt): startedAt
+        }
+    }
+
+    // MARK: - Process tree signalling
+
+    /// Live pids belonging to a launched service: members of its original process
+    /// group, plus descendants of the root pid that escaped the group (daemons that
+    /// call `setsid`). Excludes Vini itself and its own group.
+    nonisolated static func treeMembers(rootPID: pid_t, pgid: pid_t) -> [pid_t] {
+        let table = ProcessTable.snapshot()
+        guard !table.isEmpty else { return [] }
+
+        let selfPID = getpid()
+        let selfPGID = getpgid(0)
+        var found = Set<pid_t>()
+
+        // Guard against ever matching our own group (possible only via pid reuse).
+        if pgid > 1, pgid != selfPGID {
+            for entry in table where entry.pgid == pgid {
+                found.insert(entry.pid)
+            }
+        }
+
+        var childrenOf: [pid_t: [pid_t]] = [:]
+        for entry in table { childrenOf[entry.ppid, default: []].append(entry.pid) }
+
+        var queue = [rootPID]
+        var seen = Set<pid_t>()
+        while let pid = queue.popLast() {
+            guard seen.insert(pid).inserted else { continue }
+            found.insert(pid)
+            queue.append(contentsOf: childrenOf[pid] ?? [])
+        }
+
+        found.remove(selfPID)
+        let live = Set(table.map(\.pid))
+        return found.filter { $0 > 1 && live.contains($0) }
+    }
+
+    /// Signal the whole group, then mop up anything that left it.
+    nonisolated static func signalTree(rootPID: pid_t, pgid: pid_t, signal sig: Int32) {
+        if pgid > 1, pgid != getpgid(0) {
+            _ = killpg(pgid, sig)
+        }
+        for pid in treeMembers(rootPID: rootPID, pgid: pgid) {
+            _ = kill(pid, sig)
         }
     }
 
@@ -296,6 +415,38 @@ actor ProcessManager {
     private func removePersisted(serviceID: String) {
         let records = loadPersisted().filter { $0.serviceID != serviceID }
         savePersisted(records)
+    }
+}
+
+/// A snapshot of the live process table, read via `sysctl`.
+///
+/// Used instead of shelling out to `ps`/`pgrep` so that stopping a service costs
+/// no subprocesses, and so orphaned descendants can be found even after their
+/// parent has died and they were reparented to `launchd`.
+enum ProcessTable {
+    struct Entry {
+        let pid: pid_t
+        let ppid: pid_t
+        let pgid: pid_t
+    }
+
+    static func snapshot() -> [Entry] {
+        var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var size = 0
+        guard sysctl(&name, 4, nil, &size, nil, 0) == 0, size > 0 else { return [] }
+
+        // Over-allocate: processes can be created between sizing and fetching.
+        size += size / 4 + MemoryLayout<kinfo_proc>.stride * 64
+        var buffer = [kinfo_proc](
+            repeating: kinfo_proc(),
+            count: size / MemoryLayout<kinfo_proc>.stride
+        )
+        guard sysctl(&name, 4, &buffer, &size, nil, 0) == 0 else { return [] }
+
+        let count = min(size / MemoryLayout<kinfo_proc>.stride, buffer.count)
+        return buffer.prefix(count).map {
+            Entry(pid: $0.kp_proc.p_pid, ppid: $0.kp_eproc.e_ppid, pgid: $0.kp_eproc.e_pgid)
+        }
     }
 }
 

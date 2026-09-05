@@ -50,9 +50,19 @@ private struct GeneralSettingsTab: View {
                     )
                 )
 
-                Text(store.isMCPServerEnabled ? "Vini is listening for local MCP clients while the app is running." : "Enable this to let local AI agents control your Vini services.")
+                Text(store.isMCPServerEnabled ? "Vini is serving MCP at \(ViniMCPConfiguration.serverURL(port: store.mcpServerPort))" : "Enable this to let local AI agents control your Vini services.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Port")
+                    TextField("", value: Binding(
+                        get: { store.mcpServerPort },
+                        set: { store.setMCPServerPort($0) }
+                    ), formatter: NumberFormatter.plainInteger)
+                    .frame(width: 80)
+                    .textFieldStyle(.roundedBorder)
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -61,11 +71,11 @@ private struct GeneralSettingsTab: View {
                         Spacer()
                         Button("Copy") {
                             NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(ViniMCPConfiguration.clientConfigurationJSON, forType: .string)
+                            NSPasteboard.general.setString(ViniMCPConfiguration.clientConfigurationJSON(port: store.mcpServerPort), forType: .string)
                         }
                     }
 
-                    Text(ViniMCPConfiguration.clientConfigurationJSON)
+                    Text(ViniMCPConfiguration.clientConfigurationJSON(port: store.mcpServerPort))
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                         .padding(10)
@@ -73,7 +83,7 @@ private struct GeneralSettingsTab: View {
                         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                 }
 
-                Text("Use this JSON in Claude Code, Codex, OpenCode, or any MCP client that supports stdio servers. Vini must be running and the server must be enabled.")
+                Text("Add this to your MCP client config (OpenCode, Claude Code, Codex, Cursor, etc). Vini must be running with the server enabled.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -207,3 +217,12 @@ private struct GroupSettingsRow: View {
         .environmentObject(ServicesStore())
 }
 #endif
+
+private extension NumberFormatter {
+    static let plainInteger: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .none
+        formatter.usesGroupingSeparator = false
+        return formatter
+    }()
+}

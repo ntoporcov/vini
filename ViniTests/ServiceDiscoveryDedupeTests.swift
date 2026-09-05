@@ -59,4 +59,49 @@ final class ServiceDiscoveryDedupeTests: XCTestCase {
         let result = ServiceDiscovery.dedupe([redis, pg])
         XCTAssertEqual(result.count, 2)
     }
+
+    // MARK: - Batched lsof parsing
+    //
+    // Port discovery used to spawn one `lsof` per catalog port (9+) on every
+    // refresh. It now spawns one and parses `-F` machine output.
+
+    func testParsesLsofFieldOutput() {
+        let output = """
+        p862
+        f9
+        n*:59500
+        f11
+        n*:59500
+        p993
+        f7
+        n[::1]:5432
+        f8
+        n127.0.0.1:5432
+        """
+        let map = ServiceDiscovery.parseLsofFieldOutput(output)
+        XCTAssertEqual(map[59500], 862)
+        XCTAssertEqual(map[5432], 993)
+        XCTAssertEqual(map.count, 2)
+    }
+
+    func testLsofParsingHandlesIPv6AndWildcardAddresses() {
+        let map = ServiceDiscovery.parseLsofFieldOutput("p1\nn[::1]:3000\np2\nn*:4000\np3\nn127.0.0.1:5000")
+        XCTAssertEqual(map[3000], 1)
+        XCTAssertEqual(map[4000], 2)
+        XCTAssertEqual(map[5000], 3)
+    }
+
+    func testLsofParsingFirstPIDWinsForSharedPort() {
+        // Matches the previous `lsof -t | head -1` behaviour.
+        let map = ServiceDiscovery.parseLsofFieldOutput("p111\nn*:8080\np222\nn*:8080")
+        XCTAssertEqual(map[8080], 111)
+    }
+
+    func testLsofParsingIgnoresGarbageAndNamesWithoutPID() {
+        XCTAssertTrue(ServiceDiscovery.parseLsofFieldOutput("").isEmpty)
+        // `n` before any `p` has no owner, and non-numeric ports are skipped.
+        XCTAssertTrue(ServiceDiscovery.parseLsofFieldOutput("n*:3000").isEmpty)
+        XCTAssertTrue(ServiceDiscovery.parseLsofFieldOutput("p1\nn*:notaport").isEmpty)
+        XCTAssertTrue(ServiceDiscovery.parseLsofFieldOutput("p1\nnnocolon").isEmpty)
+    }
 }

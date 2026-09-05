@@ -90,6 +90,59 @@ Do NOT re-enable `com.apple.security.app-sandbox` — it will break discovery an
 - Re-adopted processes can show historic logs only; live stdout/stderr pipes cannot be recovered.
 - Logs live under `~/Library/Application Support/Vini/logs/` and use sanitized service ids.
 
+### Process-handling invariants (regressions here are expensive)
+
+These four rules each fixed a real, user-visible bug. Do not undo them.
+
+1. **A `readabilityHandler` MUST uninstall itself when `availableData` is empty.**
+   An fd at EOF is *permanently* readable, so a handler that just returns spins the
+   dispatch source at ~1M calls/sec — one saturated CPU core per exited service.
+   This is why pipe draining lives in `PipeLogReader`, which owns the teardown.
+   Covered by `testPipeLogReaderUninstallsItselfAtEOF`.
+2. **Never gate cleanup on `Process.isRunning`.** The `zsh -lc` wrapper exits while
+   the real server keeps running in the same process group (backgrounded/disowned
+   commands). Treating that as "stopped" leaves orphaned `node`/`vite` processes
+   holding ports, and the next start then fails with `EADDRINUSE`. Use
+   `ProcessManager.treeMembers` / `signalTree`, which signal the recorded **pgid**
+   plus descendants that escaped it. Covered by
+   `testStopKillsSurvivorsAfterWrapperShellExits`.
+3. **Never `Thread.sleep` inside an actor.** `ProcessManager.stop` is `async` and
+   uses `Task.sleep` for its grace period. Blocking the actor serialised every other
+   caller (including discovery's `runningServiceIDs()`), which made start/stop
+   buttons appear dead for seconds at a time.
+4. **Drain stdout and stderr concurrently in `Shell.run`.** Reading stdout to EOF
+   first deadlocks whenever the child fills the ~64KB stderr buffer. All invocations
+   also carry a timeout (`Shell.defaultTimeout` / `Shell.discoveryTimeout`).
+
+### Cost discipline
+
+- Discovery must stay at a small, constant number of subprocesses. Listening ports
+  come from **one** batched `lsof -Fpn` call (`ServiceDiscovery.listeningPIDsByPort`),
+  not one `lsof` per port.
+- There is **no polling timer** anywhere; refresh is entirely event-driven. Do not add
+  one — an idle app should sit at 0% CPU.
+- `start`/`stop`/`restart` each end with `refresh()`. Bulk/group operations must wrap
+  their work in `coalescingRefresh` so N services cost one discovery, not N + 1.
+- `ProcessTable.snapshot()` reads the process table via `sysctl`, deliberately not by
+  shelling out to `ps`/`pgrep`.
+
+### MCP server
+
+- Every session teardown must call `server.stop()`, not just `transport.disconnect()`.
+  The MCP SDK's receive loop is a long-lived `Task` that only `Server.stop()` cancels;
+  omitting it leaks a task per `initialize`.
+- Sessions are evicted by idle timeout and a hard count cap; `sessions` must never grow
+  unboundedly.
+- The listener binds loopback only via `params.requiredLocalEndpoint`. Because that
+  carries the port, construct it as `NWListener(using: params)` — passing `on:` as well
+  fails with `EINVAL`.
+- Requests are read until `Content-Length` is satisfied; a single `receive` only returns
+  the first TCP segment and truncates larger bodies.
+- SSE chunks must be **awaited**, and the connection closed via a final
+  `send(isComplete: true)` whose completion cancels it. `routeResponse` finishes the
+  stream immediately after yielding the reply, so a fire-and-forget `send` followed by
+  `connection.cancel()` discards the response and the client sees a dropped connection.
+
 ## Key Files
 
 - `Vini/App/ViniApp.swift` — `@main` entry point (Settings scene only)

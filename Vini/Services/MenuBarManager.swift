@@ -54,10 +54,13 @@ final class MenuBarManager {
         servicesStore.$groups
             .combineLatest(servicesStore.$services)
             .combineLatest(servicesStore.$workingGroupIDs)
+            // Coalesce bursts of state changes (a single pin toggle publishes
+            // groups, and refreshes publish services/workingGroupIDs) into one
+            // reconcile pass. Rapid create/remove thrash on NSStatusBar was
+            // dropping newly-pinned items and mis-associating removals.
+            .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _, _ in
-                Task { @MainActor in
-                    self?.reconcilePinnedItems()
-                }
+                self?.reconcilePinnedItems()
             }
             .store(in: &cancellables)
     }
@@ -66,21 +69,26 @@ final class MenuBarManager {
         let pinnedGroups = servicesStore.groups.filter(\.isPinnedToMenuBar)
         let pinnedIDs = Set(pinnedGroups.map(\.id))
 
-        for id in pinnedStatusItems.keys where !pinnedIDs.contains(id) {
+        // Snapshot keys first: we mutate the dictionaries in the loop below, and
+        // iterating `pinnedStatusItems.keys` directly while mutating is fragile.
+        let staleIDs = pinnedStatusItems.keys.filter { !pinnedIDs.contains($0) }
+        for id in staleIDs {
             if let item = pinnedStatusItems[id] {
                 NSStatusBar.system.removeStatusItem(item)
             }
-            pinnedStatusItems[id] = nil
-            pinnedPopovers[id] = nil
+            pinnedStatusItems.removeValue(forKey: id)
+            pinnedPopovers.removeValue(forKey: id)
         }
 
         for group in pinnedGroups {
+            // Always ensure the popover exists and points at this exact group id
+            // BEFORE the button can be clicked, so `togglePinnedPopover` never
+            // resolves a nil or stale popover.
+            configurePinnedPopover(for: group)
+
             let item = pinnedStatusItems[group.id] ?? makePinnedStatusItem(for: group)
             pinnedStatusItems[group.id] = item
             configurePinnedStatusItem(item, for: group)
-            if pinnedPopovers[group.id] == nil {
-                configurePinnedPopover(for: group)
-            }
         }
     }
 
@@ -104,7 +112,11 @@ final class MenuBarManager {
     }
 
     private func configurePinnedPopover(for group: ServiceGroup) {
-        let popover = pinnedPopovers[group.id] ?? NSPopover()
+        // Create the popover once per group id and cache it. The hosted view
+        // reads live state from the store via `groupID`, so it never needs to be
+        // rebuilt on subsequent reconciles.
+        guard pinnedPopovers[group.id] == nil else { return }
+        let popover = NSPopover()
         popover.contentSize = NSSize(width: 320, height: 420)
         popover.behavior = .transient
         popover.animates = true

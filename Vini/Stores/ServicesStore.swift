@@ -62,6 +62,9 @@ final class ServicesStore: ObservableObject {
     /// Whether the in-app MCP server should accept local agent connections.
     @Published private(set) var isMCPServerEnabled: Bool = false
 
+    /// Port on which the MCP HTTP server listens (localhost only). Persisted.
+    @Published private(set) var mcpServerPort: Int = ViniMCPConfiguration.defaultPort
+
     private let userDefinitionsKey = "vini.userDefinitions"
     private let hiddenServiceIDsKey = "vini.hiddenServiceIDs"
     private let surfacedServiceIDsKey = "vini.surfacedServiceIDs"
@@ -69,6 +72,7 @@ final class ServicesStore: ObservableObject {
     private let expandedNodeIDsKey = "vini.expandedNodeIDs"
     private let serviceOrderIDsKey = "vini.serviceOrderIDs"
     private let mcpServerEnabledKey = "vini.mcpServerEnabled"
+    private let mcpServerPortKey = "vini.mcpServerPort"
 
     /// Backing store for persistence. Injectable so tests never touch the real
     /// app preferences domain.
@@ -118,8 +122,18 @@ final class ServicesStore: ObservableObject {
 
     // MARK: - Refresh
 
+    /// Nesting depth of bulk operations that will refresh once when they finish.
+    /// Every `start`/`stop`/`restart` refreshes, so without this a 5-service group
+    /// triggered six full discoveries — dozens of subprocesses for one click.
+    private var refreshSuppressionDepth = 0
+
     /// Discover currently running services and update state.
     func refresh() async {
+        guard refreshSuppressionDepth == 0 else { return }
+        await performRefresh()
+    }
+
+    private func performRefresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
         guard mode == .normal else {
@@ -128,6 +142,15 @@ final class ServicesStore: ObservableObject {
         }
         allDiscovered = await ServiceDiscovery.shared.discover(userDefinitions: userDefinitions)
         applyFilter()
+    }
+
+    /// Run a bulk operation, collapsing every nested refresh into a single one at
+    /// the end.
+    private func coalescingRefresh(_ body: () async -> Void) async {
+        refreshSuppressionDepth += 1
+        await body()
+        refreshSuppressionDepth -= 1
+        await refresh()
     }
 
     // MARK: - App lifecycle
@@ -264,6 +287,12 @@ final class ServicesStore: ObservableObject {
         guard isMCPServerEnabled != enabled else { return }
         isMCPServerEnabled = enabled
         saveMCPServerEnabled()
+    }
+
+    func setMCPServerPort(_ port: Int) {
+        guard mcpServerPort != port else { return }
+        mcpServerPort = port
+        saveMCPServerPort()
     }
 
     // MARK: - Hide / unhide (catalog services)
@@ -568,7 +597,9 @@ final class ServicesStore: ObservableObject {
     func runGroup(_ group: ServiceGroup) async {
         beginGroupOperation(group.id)
         defer { endGroupOperation(group.id) }
-        await runGroup(group, visited: [])
+        await coalescingRefresh {
+            await runGroup(group, visited: [])
+        }
     }
 
     private func runGroup(_ group: ServiceGroup, visited: Set<UUID>) async {
@@ -662,10 +693,12 @@ final class ServicesStore: ObservableObject {
         beginGroupOperation(group.id)
         defer { endGroupOperation(group.id) }
         let services = reachableServices(of: group)
-        await withTaskGroup(of: Void.self) { taskGroup in
-            for svc in services {
-                taskGroup.addTask { [weak self] in
-                    await self?.stop(svc)
+        await coalescingRefresh {
+            await withTaskGroup(of: Void.self) { taskGroup in
+                for svc in services {
+                    taskGroup.addTask { [weak self] in
+                        await self?.stop(svc)
+                    }
                 }
             }
         }
@@ -676,13 +709,15 @@ final class ServicesStore: ObservableObject {
         beginGroupOperation(group.id)
         defer { endGroupOperation(group.id) }
         let services = reachableServices(of: group)
-        await withTaskGroup(of: Void.self) { taskGroup in
-            for svc in services where svc.isControllable {
-                taskGroup.addTask { [weak self] in
-                    if svc.status.isActive {
-                        await self?.restart(svc)
-                    } else {
-                        await self?.start(svc)
+        await coalescingRefresh {
+            await withTaskGroup(of: Void.self) { taskGroup in
+                for svc in services where svc.isControllable {
+                    taskGroup.addTask { [weak self] in
+                        if svc.status.isActive {
+                            await self?.restart(svc)
+                        } else {
+                            await self?.start(svc)
+                        }
                     }
                 }
             }
@@ -783,11 +818,19 @@ final class ServicesStore: ObservableObject {
 
     private func loadMCPServerEnabled() {
         isMCPServerEnabled = defaults.bool(forKey: mcpServerEnabledKey)
+        let storedPort = defaults.integer(forKey: mcpServerPortKey)
+        mcpServerPort = storedPort > 0 ? storedPort : ViniMCPConfiguration.defaultPort
     }
 
     private func saveMCPServerEnabled() {
         guard mode == .normal else { return }
         defaults.set(isMCPServerEnabled, forKey: mcpServerEnabledKey)
+        flushDefaults()
+    }
+
+    private func saveMCPServerPort() {
+        guard mode == .normal else { return }
+        defaults.set(mcpServerPort, forKey: mcpServerPortKey)
         flushDefaults()
     }
 

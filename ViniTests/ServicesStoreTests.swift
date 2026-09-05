@@ -341,4 +341,46 @@ final class ServiceGroupTests: XCTestCase {
         XCTAssertEqual(ServiceGroupMode.simultaneous.displayLabel, "Simultaneous")
         XCTAssertEqual(ServiceGroupMode.sequenced.displayLabel, "Sequenced")
     }
+
+    // MARK: - Menu-bar pinning identity
+
+    @MainActor
+    func testPinningNestedGroupOnlyAffectsTargetedGroup() {
+        let store = ServicesStore(defaults: TestDefaults.make())
+
+        let runtimeA = ServiceGroup(name: "TMS Runtime", mode: .simultaneous, memberServiceIDs: ["user:a"])
+        let runtimeB = ServiceGroup(name: "Planning Runtime", mode: .simultaneous, memberServiceIDs: ["user:b"])
+        let runtimeC = ServiceGroup(name: "Bob Runtime", mode: .simultaneous, memberServiceIDs: ["user:c"])
+        let parentA = ServiceGroup(name: "TMS", mode: .simultaneous, memberServiceIDs: [runtimeA.memberReferenceID])
+        let parentB = ServiceGroup(name: "Planning", mode: .simultaneous, memberServiceIDs: [runtimeB.memberReferenceID])
+        let parentC = ServiceGroup(name: "bob-vm", mode: .simultaneous, memberServiceIDs: [runtimeC.memberReferenceID])
+
+        for group in [runtimeA, runtimeB, runtimeC, parentA, parentB, parentC] {
+            store.addGroup(group)
+        }
+
+        store.setGroupPinned(runtimeB.id, isPinned: true)
+
+        XCTAssertEqual(store.group(withID: runtimeB.id)?.isPinnedToMenuBar, true)
+        XCTAssertEqual(store.groups.filter(\.isPinnedToMenuBar).map(\.id), [runtimeB.id])
+
+        store.setGroupPinned(runtimeA.id, isPinned: true)
+        store.setGroupPinned(runtimeC.id, isPinned: true)
+
+        XCTAssertEqual(
+            Set(store.groups.filter(\.isPinnedToMenuBar).map(\.id)),
+            [runtimeA.id, runtimeB.id, runtimeC.id]
+        )
+
+        // Unpinning one nested group must not disturb the others.
+        store.setGroupPinned(runtimeB.id, isPinned: false)
+
+        XCTAssertEqual(store.group(withID: runtimeB.id)?.isPinnedToMenuBar, false)
+        XCTAssertEqual(store.group(withID: runtimeA.id)?.isPinnedToMenuBar, true)
+        XCTAssertEqual(store.group(withID: runtimeC.id)?.isPinnedToMenuBar, true)
+        XCTAssertEqual(
+            Set(store.groups.filter(\.isPinnedToMenuBar).map(\.id)),
+            [runtimeA.id, runtimeC.id]
+        )
+    }
 }

@@ -123,6 +123,56 @@ enum ViniMCPToolRegistry {
                 "path": stringSchema("Absolute directory path to match against service working directories.")
             ], required: ["path"]),
             annotations: .init(readOnlyHint: true, destructiveHint: false, openWorldHint: false)
+        ),
+        Tool(
+            name: "create_service",
+            description: "Create a new user-defined service in Vini. Returns the created service info.",
+            inputSchema: objectSchema(properties: [
+                "name": stringSchema("Display name for the service."),
+                "start_command": stringSchema("Shell command to start the service (e.g. 'yarn dev', 'docker compose up')."),
+                "working_directory": stringSchema("Absolute path to the directory the command runs from."),
+                "stop_command": stringSchema("Optional shell command to stop the service. If omitted, Vini will terminate the started process."),
+                "probe_port": intSchema("Optional TCP port to probe for status checks."),
+                "keep_alive_on_quit": boolSchema("If true, the process is left running when Vini quits and re-adopted on next launch. Defaults to false.")
+            ], required: ["name", "start_command"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+        ),
+        Tool(
+            name: "create_group",
+            description: "Create a new service group in Vini. Optionally add existing services as members.",
+            inputSchema: objectSchema(properties: [
+                "name": stringSchema("Display name for the group."),
+                "mode": stringSchema("Group mode: 'simultaneous' (start all at once) or 'sequenced' (start one after another). Defaults to simultaneous."),
+                "service_ids": stringSchema("Optional comma-separated list of service ids to add as members.")
+            ], required: ["name"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false)
+        ),
+        Tool(
+            name: "add_to_group",
+            description: "Add a service or a nested group to an existing group. Preserves existing memberships elsewhere (duplicates into group). Cycles and self-nesting are rejected.",
+            inputSchema: objectSchema(properties: [
+                "service": stringSchema("Service or group id/name to add. To add a group, pass its id, name, or its 'group:<uuid>' reference id."),
+                "group": stringSchema("Target group id or name.")
+            ], required: ["service", "group"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
+        ),
+        Tool(
+            name: "remove_from_group",
+            description: "Remove a service or a nested group from a specific group.",
+            inputSchema: objectSchema(properties: [
+                "service": stringSchema("Service or group id/name to remove. To target a group, pass its id, name, or its 'group:<uuid>' reference id."),
+                "group": stringSchema("Group id or name to remove from.")
+            ], required: ["service", "group"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false)
+        ),
+        Tool(
+            name: "move_to_group",
+            description: "Move a service or a nested group into a group, removing it from all other groups. Pass group as empty string or omit to move to ungrouped. Cycles and self-nesting are rejected.",
+            inputSchema: objectSchema(properties: [
+                "service": stringSchema("Service or group id/name to move. To move a group, pass its id, name, or its 'group:<uuid>' reference id."),
+                "group": stringSchema("Target group id or name. Empty or omitted means ungrouped.")
+            ], required: ["service"]),
+            annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         )
     ]
 
@@ -210,6 +260,47 @@ enum ViniMCPToolRegistry {
                 let response = try await store.mcpServicesForDirectory(path: path)
                 return try toolResult(response)
 
+            case "create_service":
+                let name = try requiredString("name", in: params.arguments)
+                let startCommand = try requiredString("start_command", in: params.arguments)
+                let workingDirectory = params.arguments?["working_directory"]?.stringValue
+                let stopCommand = params.arguments?["stop_command"]?.stringValue
+                let probePort = params.arguments?["probe_port"]?.intValue
+                let keepAlive = params.arguments?["keep_alive_on_quit"]?.boolValue ?? false
+                let response = try await store.mcpCreateService(
+                    name: name, startCommand: startCommand,
+                    workingDirectory: workingDirectory, stopCommand: stopCommand,
+                    probePort: probePort, keepAliveOnQuit: keepAlive
+                )
+                return try toolResult(response)
+
+            case "create_group":
+                let name = try requiredString("name", in: params.arguments)
+                let modeString = params.arguments?["mode"]?.stringValue ?? "simultaneous"
+                let serviceIDsString = params.arguments?["service_ids"]?.stringValue
+                let response = try await store.mcpCreateGroup(
+                    name: name, modeString: modeString, serviceIDsCSV: serviceIDsString
+                )
+                return try toolResult(response)
+
+            case "add_to_group":
+                let serviceQuery = try requiredString("service", in: params.arguments)
+                let groupQuery = try requiredString("group", in: params.arguments)
+                let response = try await store.mcpAddToGroup(serviceQuery: serviceQuery, groupQuery: groupQuery)
+                return try toolResult(response)
+
+            case "remove_from_group":
+                let serviceQuery = try requiredString("service", in: params.arguments)
+                let groupQuery = try requiredString("group", in: params.arguments)
+                let response = try await store.mcpRemoveFromGroup(serviceQuery: serviceQuery, groupQuery: groupQuery)
+                return try toolResult(response)
+
+            case "move_to_group":
+                let serviceQuery = try requiredString("service", in: params.arguments)
+                let groupQuery = params.arguments?["group"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let response = try await store.mcpMoveToGroup(serviceQuery: serviceQuery, groupQuery: groupQuery)
+                return try toolResult(response)
+
             default:
                 throw ViniMCPError.unknownTool(params.name)
             }
@@ -285,6 +376,10 @@ enum ViniMCPToolRegistry {
 
     private static func intSchema(_ description: String) -> Value {
         .object(["type": "integer", "description": .string(description)])
+    }
+
+    private static func boolSchema(_ description: String) -> Value {
+        .object(["type": "boolean", "description": .string(description)])
     }
 }
 
@@ -613,6 +708,145 @@ private extension ServicesStore {
         )
     }
 
+    func mcpCreateService(
+        name: String, startCommand: String,
+        workingDirectory: String?, stopCommand: String?,
+        probePort: Int?, keepAliveOnQuit: Bool
+    ) async throws -> ViniMCPActionResponse {
+        let definition = UserServiceDefinition(
+            name: name,
+            startCommand: startCommand,
+            stopCommand: stopCommand,
+            workingDirectory: workingDirectory,
+            probePort: probePort,
+            keepAliveOnQuit: keepAliveOnQuit
+        )
+        addUserDefinition(definition)
+        // After refresh, find the new service
+        let serviceID = "user:\(definition.id.uuidString)"
+        let service = self.service(withID: serviceID)
+        let info = service.map { mcpInfo(for: $0) } ?? ViniMCPServiceInfo(
+            id: serviceID, name: name, status: "stopped", statusLabel: "Stopped",
+            source: "Custom", kind: "userDefined", pid: nil, port: probePort,
+            iconSystemName: "shippingbox", isControllable: true, isCatalogKnown: true,
+            isVisibleInVini: true, isHidden: false, isSurfaced: false, hasLogs: false,
+            homebrewFormula: nil, launchAgentLabel: nil,
+            userDefinition: ViniMCPUserDefinitionInfo(
+                id: definition.id, startCommand: startCommand, stopCommand: stopCommand,
+                workingDirectory: workingDirectory, probePort: probePort,
+                keepAliveOnQuit: keepAliveOnQuit
+            )
+        )
+        return ViniMCPActionResponse(
+            generatedAt: Date(), action: "create",
+            service: info, message: "Created service '\(name)' with id \(serviceID)."
+        )
+    }
+
+    func mcpCreateGroup(name: String, modeString: String, serviceIDsCSV: String?) async throws -> ViniMCPGroupActionResponse {
+        let mode: ServiceGroupMode
+        switch modeString.lowercased() {
+        case "sequenced": mode = .sequenced
+        default: mode = .simultaneous
+        }
+
+        var memberIDs: [String] = []
+        if let csv = serviceIDsCSV, !csv.isEmpty {
+            memberIDs = csv.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            // Resolve names to IDs
+            memberIDs = try memberIDs.map { raw in
+                if allDiscovered.contains(where: { $0.id == raw }) { return raw }
+                let resolved = try resolveService(raw)
+                return resolved.id
+            }
+        }
+
+        let group = ServiceGroup(name: name, mode: mode, memberServiceIDs: memberIDs)
+        addGroup(group)
+
+        return ViniMCPGroupActionResponse(
+            generatedAt: Date(), action: "create",
+            group: mcpInfo(for: group),
+            message: "Created group '\(name)' with \(memberIDs.count) member(s)."
+        )
+    }
+
+    func mcpAddToGroup(serviceQuery: String, groupQuery: String) async throws -> ViniMCPGroupActionResponse {
+        let member = try resolveMemberReference(serviceQuery)
+        let group = try resolveGroup(groupQuery)
+        if let nestedGroupID = ServiceGroup.groupID(fromMemberID: member.memberID) {
+            if nestedGroupID == group.id {
+                throw ViniMCPError.actionFailed("Cannot add group '\(member.name)' to itself.")
+            }
+            if wouldCreateCycle(addingGroup: nestedGroupID, to: group.id) {
+                throw ViniMCPError.actionFailed("Adding group '\(member.name)' to '\(group.name)' would create a cycle.")
+            }
+        }
+        addMember(member.memberID, toGroup: group.id)
+        let updated = self.group(withID: group.id) ?? group
+        return ViniMCPGroupActionResponse(
+            generatedAt: Date(), action: "add_member",
+            group: mcpInfo(for: updated),
+            message: "Added '\(member.name)' to group '\(updated.name)'."
+        )
+    }
+
+    func mcpRemoveFromGroup(serviceQuery: String, groupQuery: String) async throws -> ViniMCPGroupActionResponse {
+        let member = try resolveMemberReference(serviceQuery)
+        let group = try resolveGroup(groupQuery)
+        removeMember(member.memberID, fromGroup: group.id)
+        let updated = self.group(withID: group.id) ?? group
+        return ViniMCPGroupActionResponse(
+            generatedAt: Date(), action: "remove_member",
+            group: mcpInfo(for: updated),
+            message: "Removed '\(member.name)' from group '\(updated.name)'."
+        )
+    }
+
+    func mcpMoveToGroup(serviceQuery: String, groupQuery: String?) async throws -> ViniMCPActionResponse {
+        let member = try resolveMemberReference(serviceQuery)
+        let targetGroupID: UUID?
+        if let groupQuery, !groupQuery.isEmpty {
+            let group = try resolveGroup(groupQuery)
+            targetGroupID = group.id
+        } else {
+            targetGroupID = nil
+        }
+        if let nestedGroupID = ServiceGroup.groupID(fromMemberID: member.memberID), let targetGroupID {
+            if nestedGroupID == targetGroupID {
+                throw ViniMCPError.actionFailed("Cannot move group '\(member.name)' into itself.")
+            }
+            if wouldCreateCycle(addingGroup: nestedGroupID, to: targetGroupID) {
+                throw ViniMCPError.actionFailed("Moving group '\(member.name)' into that group would create a cycle.")
+            }
+        }
+        moveMember(member.memberID, toGroup: targetGroupID)
+        let destination = targetGroupID.flatMap { group(withID: $0)?.name } ?? "ungrouped"
+        let info: ViniMCPServiceInfo
+        if ServiceGroup.groupID(fromMemberID: member.memberID) != nil {
+            info = placeholderServiceInfo(id: member.memberID, name: member.name, kind: "group")
+        } else if let resolved = self.service(withID: member.memberID) {
+            info = mcpInfo(for: resolved)
+        } else {
+            info = placeholderServiceInfo(id: member.memberID, name: member.name, kind: "userDefined")
+        }
+        return ViniMCPActionResponse(
+            generatedAt: Date(), action: "move",
+            service: info,
+            message: "Moved '\(member.name)' to \(destination)."
+        )
+    }
+
+    private func placeholderServiceInfo(id: String, name: String, kind: String) -> ViniMCPServiceInfo {
+        ViniMCPServiceInfo(
+            id: id, name: name, status: "unknown", statusLabel: "Unknown",
+            source: "Group", kind: kind, pid: nil, port: nil,
+            iconSystemName: "folder", isControllable: false, isCatalogKnown: true,
+            isVisibleInVini: true, isHidden: false, isSurfaced: false, hasLogs: false,
+            homebrewFormula: nil, launchAgentLabel: nil, userDefinition: nil
+        )
+    }
+
     private func matchesStatus(_ service: ViniMCPServiceInfo, filter: String?) throws -> Bool {
         guard let filter, filter != "all" else { return true }
         switch filter {
@@ -642,6 +876,20 @@ private extension ServicesStore {
         if partialMatches.count > 1 { throw ViniMCPError.ambiguous(query, partialMatches.map { "\($0.name) (\($0.id))" }) }
 
         throw ViniMCPError.notFound(query)
+    }
+
+    /// Resolve a query into a group-member reference: either a service id or a
+    /// group's `group:<uuid>` reference id, along with a display name. Groups are
+    /// preferred only when the query clearly targets one so a service and group
+    /// sharing a name stays unambiguous where possible.
+    private func resolveMemberReference(_ query: String) throws -> (memberID: String, name: String) {
+        if let group = try? resolveGroup(query) {
+            if (try? resolveService(query)) == nil {
+                return (group.memberReferenceID, group.name)
+            }
+        }
+        let service = try resolveService(query)
+        return (service.id, service.name)
     }
 
     private func resolveGroup(_ query: String) throws -> ServiceGroup {

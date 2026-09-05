@@ -28,9 +28,31 @@ enum ShellError: LocalizedError {
 /// This relies on the app being **non-sandboxed** (Developer ID distribution).
 /// A sandboxed Mac App Store build cannot spawn arbitrary executables.
 enum Shell {
+    /// Ceiling for control operations (`brew services start`, user stop commands),
+    /// which can legitimately be slow on a cold run.
+    static let defaultTimeout: TimeInterval = 60
+
+    /// Tighter ceiling for discovery. Discovery runs on every refresh and must not
+    /// wedge the UI if a tool hangs (e.g. `lsof` against a stale network mount).
+    static let discoveryTimeout: TimeInterval = 15
+
     /// PATH suitable for Finder-launched app processes. Includes Homebrew,
     /// system paths, and common per-user JS/runtime manager shim locations.
+    ///
+    /// The no-working-directory result is cached: building it stats ~16 paths and
+    /// lists the nvm versions directory, and it used to run on every `run()` call.
     static func toolSearchPath(currentPath: String?, workingDirectory: String? = nil) -> String {
+        guard workingDirectory == nil || workingDirectory?.isEmpty == true else {
+            return buildToolSearchPath(currentPath: currentPath, workingDirectory: workingDirectory)
+        }
+        return basePathCache.value(for: currentPath ?? "") {
+            buildToolSearchPath(currentPath: currentPath, workingDirectory: nil)
+        }
+    }
+
+    private static let basePathCache = PathCache()
+
+    private static func buildToolSearchPath(currentPath: String?, workingDirectory: String?) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var paths: [String] = []
         if let workingDirectory, !workingDirectory.isEmpty {
@@ -66,7 +88,8 @@ enum Shell {
         _ launchPath: String,
         _ arguments: [String] = [],
         environment: [String: String]? = nil,
-        throwOnFailure: Bool = false
+        throwOnFailure: Bool = false,
+        timeout: TimeInterval = Shell.defaultTimeout
     ) throws -> ShellResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
@@ -90,14 +113,40 @@ enum Shell {
             throw ShellError.launchFailed(error.localizedDescription)
         }
 
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        // Both pipes must be drained concurrently. Reading stdout to EOF first
+        // deadlocks whenever the child fills the ~64KB stderr buffer (brew emits
+        // deprecation warnings there): the child blocks writing stderr, so stdout
+        // never reaches EOF.
+        let collector = OutputCollector()
+        let group = DispatchGroup()
+        for (handle, isStdout) in [
+            (outPipe.fileHandleForReading, true),
+            (errPipe.fileHandleForReading, false),
+        ] {
+            DispatchQueue.global(qos: .userInitiated).async(group: group) {
+                let data = handle.readDataToEndOfFile()
+                collector.store(data, isStdout: isStdout)
+            }
+        }
+
+        var timedOut = false
+        if group.wait(timeout: .now() + timeout) == .timedOut {
+            timedOut = true
+            // Kill the group: the child may have spawned its own children which
+            // would otherwise keep the pipes open and the readers parked.
+            let pid = process.processIdentifier
+            let pgid = getpgid(pid) > 0 ? getpgid(pid) : pid
+            ProcessManager.signalTree(rootPID: pid, pgid: pgid, signal: SIGKILL)
+            _ = group.wait(timeout: .now() + 2)
+        }
         process.waitUntilExit()
 
         let result = ShellResult(
-            exitCode: process.terminationStatus,
-            stdout: String(data: outData, encoding: .utf8) ?? "",
-            stderr: String(data: errData, encoding: .utf8) ?? ""
+            exitCode: timedOut ? -1 : process.terminationStatus,
+            stdout: collector.stdoutString,
+            stderr: timedOut
+                ? "Timed out after \(Int(timeout))s"
+                : collector.stderrString
         )
 
         if throwOnFailure && !result.succeeded {
@@ -111,8 +160,12 @@ enum Shell {
 
     /// Run a command line through `/bin/zsh -lc` (for user-defined commands).
     @discardableResult
-    static func runScript(_ command: String, throwOnFailure: Bool = false) throws -> ShellResult {
-        try run("/bin/zsh", ["-lc", command], throwOnFailure: throwOnFailure)
+    static func runScript(
+        _ command: String,
+        throwOnFailure: Bool = false,
+        timeout: TimeInterval = Shell.defaultTimeout
+    ) throws -> ShellResult {
+        try run("/bin/zsh", ["-lc", command], throwOnFailure: throwOnFailure, timeout: timeout)
     }
 
     // MARK: - Tool discovery
@@ -141,8 +194,60 @@ enum Shell {
     }
 }
 
-private extension Array where Element == String {
-    func uniquedExistingDirectories() -> [String] {
+/// Memoises the computed tool search PATH.
+///
+/// `@unchecked Sendable`: state is guarded by `lock`. A lock-protected class is used
+/// rather than `nonisolated(unsafe)` mutable global state.
+private final class PathCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String: String] = [:]
+
+    func value(for key: String, build: () -> String) -> String {
+        lock.lock()
+        if let cached = entries[key] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        // Built outside the lock: it touches the filesystem.
+        let built = build()
+
+        lock.lock()
+        entries[key] = built
+        lock.unlock()
+        return built
+    }
+}
+
+/// Accumulates stdout/stderr written from two concurrent reader queues.
+///
+/// `@unchecked Sendable`: all state is guarded by `lock`.
+private final class OutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stdout = Data()
+    private var stderr = Data()
+
+    func store(_ data: Data, isStdout: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if isStdout { stdout.append(data) } else { stderr.append(data) }
+    }
+
+    var stdoutString: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: stdout, as: UTF8.self)
+    }
+
+    var stderrString: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: stderr, as: UTF8.self)
+    }
+}
+
+private extension Array where Element == String {    func uniquedExistingDirectories() -> [String] {
         var seen = Set<String>()
         return filter { path in
             guard !path.isEmpty, seen.insert(path).inserted else { return false }

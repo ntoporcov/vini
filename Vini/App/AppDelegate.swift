@@ -64,13 +64,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 Task { await self.setMCPServerRunning(enabled) }
             }
             .store(in: &cancellables)
+
+        servicesStore.$mcpServerPort
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self, self.servicesStore.isMCPServerEnabled else { return }
+                Task {
+                    await self.mcpServer.stop()
+                    await self.setMCPServerRunning(true)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func setMCPServerRunning(_ running: Bool) async {
         guard !servicesStore.isScreenshotMode else { return }
         if running {
             do {
-                try await mcpServer.start()
+                try await mcpServer.start(port: servicesStore.mcpServerPort)
             } catch {
                 NSLog("Failed to start Vini MCP server: \(error.localizedDescription)")
             }

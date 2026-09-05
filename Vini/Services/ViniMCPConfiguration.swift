@@ -1,43 +1,18 @@
 import Foundation
 
 enum ViniMCPConfiguration {
-    static let socketFileName = "mcp.sock"
+    static let defaultPort = 45678
 
-    static var applicationSupportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("Vini", isDirectory: true)
+    static func serverURL(port: Int) -> String {
+        "http://127.0.0.1:\(port)/mcp"
     }
 
-    static var socketURL: URL {
-        applicationSupportDirectory.appendingPathComponent(socketFileName, isDirectory: false)
-    }
-
-    static var socketPath: String {
-        socketURL.path
-    }
-
-    static var relayExecutablePath: String {
-        if let path = Bundle.main.path(forAuxiliaryExecutable: "ViniMCP") {
-            return path
-        }
-        return Bundle.main.bundleURL
-            .appendingPathComponent("Contents", isDirectory: true)
-            .appendingPathComponent("Helpers", isDirectory: true)
-            .appendingPathComponent("ViniMCP", isDirectory: false)
-            .path
-    }
-
-    static var clientConfigurationJSON: String {
-        let escapedPath = relayExecutablePath
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    static func clientConfigurationJSON(port: Int) -> String {
+        let url = serverURL(port: port)
         return """
         {
-          "mcpServers": {
-            "vini": {
-              "command": "\(escapedPath)"
-            }
-          }
+          "type": "remote",
+          "url": "\(url)"
         }
         """
     }

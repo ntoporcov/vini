@@ -13,17 +13,19 @@ actor ServiceDiscovery {
 
     /// Discover all services. `userDefinitions` are merged in and probed for status.
     func discover(userDefinitions: [UserServiceDefinition] = []) async -> [ViniService] {
-        async let brew = discoverHomebrew()
-        async let agents = discoverLaunchAgents()
-        async let ports = discoverPorts()
+        // One `lsof` for every port we care about, reused by both the catalog probe
+        // and user-defined probes. Previously this was one subprocess per port
+        // (9 catalog ports + one per user service) on every single refresh.
+        let listeners = Self.listeningPIDsByPort()
 
-        var services = await brew + agents
-        services += await probeUserDefined(userDefinitions)
+        var services = discoverHomebrew() + discoverLaunchAgents()
+        services += await probeUserDefined(userDefinitions, listeners: listeners)
 
         // Add port-probed services only when no controllable service already covers
         // that port — avoids showing e.g. PostgreSQL twice (brew + port 5432).
         let coveredPorts = Set(services.compactMap(\.port))
-        for probed in await ports where probed.port.map({ !coveredPorts.contains($0) }) ?? true {
+        for probed in discoverPorts(listeners: listeners)
+        where probed.port.map({ !coveredPorts.contains($0) }) ?? true {
             services.append(probed)
         }
 
@@ -53,7 +55,7 @@ actor ServiceDiscovery {
 
     private func discoverHomebrew() -> [ViniService] {
         guard let brew = Shell.brewPath() else { return [] }
-        guard let result = try? Shell.run(brew, ["services", "list", "--json"]),
+        guard let result = try? Shell.run(brew, ["services", "list", "--json"], timeout: Shell.discoveryTimeout),
               result.succeeded,
               let data = result.stdout.data(using: .utf8)
         else { return [] }
@@ -99,7 +101,7 @@ actor ServiceDiscovery {
     // MARK: - launchd
 
     private func discoverLaunchAgents() -> [ViniService] {
-        guard let result = try? Shell.run(Shell.launchctlPath, ["list"]), result.succeeded else {
+        guard let result = try? Shell.run(Shell.launchctlPath, ["list"], timeout: Shell.discoveryTimeout), result.succeeded else {
             return []
         }
 
@@ -162,11 +164,11 @@ actor ServiceDiscovery {
     // MARK: - Ports
 
     /// Probe the catalog's well-known developer service ports.
-    private func discoverPorts() -> [ViniService] {
+    private func discoverPorts(listeners: [Int: Int]) -> [ViniService] {
         var services: [ViniService] = []
         for entry in KnownServices.catalog {
             guard let port = entry.port else { continue }
-            guard let pid = listeningPID(onPort: port) else { continue }
+            guard let pid = listeners[port] else { continue }
             services.append(
                 ViniService(
                     id: "port:\(port)",
@@ -182,20 +184,52 @@ actor ServiceDiscovery {
         return services
     }
 
-    private func listeningPID(onPort port: Int) -> Int? {
-        guard FileManager.default.isExecutableFile(atPath: Shell.lsofPath) else { return nil }
+    /// Every listening TCP port on the machine mapped to its owning pid, from a
+    /// single `lsof` invocation.
+    ///
+    /// Uses `-F` machine-readable output: a `p<pid>` line opens a process block and
+    /// each following `n<addr>` line is one socket belonging to it.
+    static func listeningPIDsByPort() -> [Int: Int] {
+        guard FileManager.default.isExecutableFile(atPath: Shell.lsofPath) else { return [:] }
         guard let result = try? Shell.run(
             Shell.lsofPath,
-            ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"]
-        ), result.succeeded else { return nil }
-        let pidLine = result.stdout.split(separator: "\n").first.map(String.init) ?? ""
-        return Int(pidLine.trimmingCharacters(in: .whitespaces))
+            ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"],
+            timeout: Shell.discoveryTimeout
+        ) else { return [:] }
+        // lsof exits non-zero when some sockets are unreadable, but still prints
+        // usable output, so the exit code is deliberately not checked here.
+        return parseLsofFieldOutput(result.stdout)
+    }
+
+    static func parseLsofFieldOutput(_ output: String) -> [Int: Int] {
+        var result: [Int: Int] = [:]
+        var currentPID: Int?
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let tag = line.first else { continue }
+            let value = line.dropFirst()
+            switch tag {
+            case "p":
+                currentPID = Int(value)
+            case "n":
+                guard let pid = currentPID else { continue }
+                // Addresses look like "*:3000", "127.0.0.1:5432" or "[::1]:5432".
+                guard let colon = value.lastIndex(of: ":") else { continue }
+                guard let port = Int(value[value.index(after: colon)...]) else { continue }
+                // First writer wins, matching the previous `lsof -t | head -1`.
+                if result[port] == nil { result[port] = pid }
+            default:
+                continue
+            }
+        }
+        return result
     }
 
     // MARK: - User-defined
 
     private func probeUserDefined(
-        _ definitions: [UserServiceDefinition]
+        _ definitions: [UserServiceDefinition],
+        listeners: [Int: Int]
     ) async -> [ViniService] {
         let runningIDs = await ProcessManager.shared.runningServiceIDs()
         return definitions.map { def in
@@ -206,7 +240,7 @@ actor ServiceDiscovery {
                 status = .running
             } else if let probePort = def.probePort {
                 // Fall back to a port probe for detached/externally-started services.
-                status = (listeningPID(onPort: probePort) != nil) ? .running : .stopped
+                status = listeners[probePort] != nil ? .running : .stopped
             } else {
                 status = .stopped
             }

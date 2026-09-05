@@ -93,3 +93,101 @@ enum LogFileManager {
         try? FileManager.default.moveItem(at: url, to: rotated)
     }
 }
+
+/// A long-lived writer for one running service's log file.
+///
+/// `LogFileManager.append` reopens the file on every call — two `stat`s, an `open`,
+/// an `lseek` and a `close` per chunk. A chatty dev server emits many small writes,
+/// so live capture holds one handle open and rotates off a byte counter instead.
+///
+/// `@unchecked Sendable`: state is guarded by `lock`. Required because this is
+/// captured by a `FileHandle.readabilityHandler`, which runs on a dispatch queue.
+final class LogSink: @unchecked Sendable {
+    private let serviceID: String
+    private let lock = NSLock()
+    private var handle: FileHandle?
+    private var bytesWritten: UInt64 = 0
+    private var isFinished = false
+
+    init(serviceID: String) {
+        self.serviceID = serviceID
+    }
+
+    func write(_ data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished, !data.isEmpty else { return }
+
+        if handle == nil {
+            handle = LogFileManager.openForAppending(serviceID)
+            bytesWritten = LogFileManager.size(serviceID)
+        }
+        guard let handle else { return }
+
+        try? handle.write(contentsOf: data)
+        bytesWritten += UInt64(data.count)
+
+        if bytesWritten > LogFileManager.maxBytes {
+            try? handle.close()
+            self.handle = nil
+            LogFileManager.rotateIfNeeded(serviceID)
+            bytesWritten = 0
+        }
+    }
+
+    /// Release the file descriptor. Safe to call more than once.
+    func finish() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinished else { return }
+        isFinished = true
+        try? handle?.close()
+        handle = nil
+    }
+
+    deinit {
+        try? handle?.close()
+    }
+}
+
+/// Drains a pipe's read end into a `LogSink`, uninstalling itself at EOF.
+///
+/// The EOF teardown is the whole point of this type. A file descriptor at EOF is
+/// *permanently* readable, so a `readabilityHandler` that merely returns when it
+/// sees no data causes the dispatch source to re-fire in a tight loop — measured
+/// at ~1M callbacks per second, i.e. a saturated CPU core for every service whose
+/// process has exited.
+///
+/// `@unchecked Sendable`: `handle` and `sink` are both internally synchronised, and
+/// the handler installed on a `FileHandle` is serialised by its dispatch source.
+final class PipeLogReader: @unchecked Sendable {
+    private let handle: FileHandle
+    private let sink: LogSink
+
+    init(handle: FileHandle, sink: LogSink) {
+        self.handle = handle
+        self.sink = sink
+    }
+
+    /// Whether a readability handler is currently installed.
+    var isReading: Bool { handle.readabilityHandler != nil }
+
+    func start() {
+        handle.readabilityHandler = { [sink] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                // EOF. Must uninstall, or this spins forever.
+                handle.readabilityHandler = nil
+                sink.finish()
+                return
+            }
+            sink.write(data)
+        }
+    }
+
+    /// Uninstall the handler and release the log file descriptor. Idempotent.
+    func stop() {
+        handle.readabilityHandler = nil
+        sink.finish()
+    }
+}
